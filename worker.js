@@ -39,7 +39,8 @@ export default {
 
       const PAYMOB_SECRET_KEY = "Egy_sk_test_77f935610c2ff1f26dee1bf30935de08839d7f204af02861ca93bdaeb8f95242";
       const SUPABASE_URL = "https://lwffkkzdkvafyuwrcbzl.supabase.co"; 
-      const SUPABASE_ANON_KEY = "EyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1wrcbzlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzODQ5NzUsImV4cCI6MjA5OTk2MDk3NX0.hD7SWLaZ1c1tNfSNuKYHceaqCqS1riqTb1BxfM3_2uA"; 
+      // المفتاح الصحيح المكتمل لـ Supabase
+      const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzODQ5NzUsImV4cCI6MjA5OTk2MDk3NX0.hD7SWLaZ1c1tNfSNuKYHceaqCqS1riqTb1BxfM3_2uA"; 
 
       if (!transaction_id) {
         return new Response(JSON.stringify({ 
@@ -109,7 +110,6 @@ export default {
       }
 
       // 3️⃣ البديل المعتمد للبيئة التجريبية (Test Environment Database Fallback)
-      // يحمي البيئة التجريبية من حظر الـ API بمطابقة جدول المعاملات الناجحة والمرفوضة
       if (!isSuccess) {
         const testDatabase = {
           "500048799": { success: true, amount: 2000 },  // معاملة سنوية مقبولة
@@ -136,7 +136,7 @@ export default {
         });
       }
 
-      // 5️⃣ الحفظ في Supabase مع التواريخ المحسوبة
+      // 5️⃣ الحفظ الفوري في Supabase بعد إصلاح المفتاح
       const startDate = new Date();
       const isAnnual = amountInEgp >= 2000;
       const durationDays = isAnnual ? 365 : 30;
