@@ -7,7 +7,6 @@ export default {
       "Content-Type": "application/json"
     };
 
-    // 1️⃣ معالجة طلبات الـ Preflight (CORS)
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
@@ -23,7 +22,6 @@ export default {
     }
 
     try {
-      // 2️⃣ قراءة وتحليل بيانات الطلب (Request Body) مع كشف أخطاء الـ JSON
       let body;
       try {
         body = await request.json();
@@ -53,8 +51,7 @@ export default {
         });
       }
 
-      // 3️⃣ الفحص في Supabase مع معالجة خطأ الاتصال بقاعدة البيانات
-      let existingData;
+      // 1️⃣ الفحص في Supabase لمنع إعادة الاستخدام
       try {
         const supaCheck = await fetch(`${SUPABASE_URL}/rest/v1/payments?transaction_id=eq.${transaction_id}&select=transaction_id`, {
           method: 'GET',
@@ -65,7 +62,7 @@ export default {
         });
 
         if (supaCheck.ok) {
-          existingData = await supaCheck.json();
+          const existingData = await supaCheck.json();
           if (Array.isArray(existingData) && existingData.length > 0) {
             return new Response(JSON.stringify({ 
               success: false, 
@@ -80,83 +77,84 @@ export default {
       } catch (supaErr) {
         return new Response(JSON.stringify({ 
           success: false, 
-          message: `خطأ أثناء الاتصال بقاعدة البيانات (Supabase Error): ${supaErr.message}` 
+          message: `خطأ أثناء الاتصال بقاعدة البيانات: ${supaErr.message}` 
         }), {
           status: 500,
           headers: corsHeaders
         });
       }
 
-      // 4️⃣ الاستعلام المباشر من Paymob مع معالجة خطأ الشبكة والـ API
-      let paymobRes;
+      // 2️⃣ الاستعلام المزدوج من Paymob
+      let isSuccess = false;
+      let amountInEgp = 0;
+
+      // التجربة الأولى: عبر Unified Intention API (للمفاتيح الحديثة Egy_sk_)
       try {
-        paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+        const intentionRes = await fetch(`https://accept.paymob.com/v1/intention/${transaction_id}`, {
           method: 'GET',
           headers: {
             'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
             'Content-Type': 'application/json'
           }
         });
-      } catch (paymobFetchErr) {
-        return new Response(JSON.stringify({ 
-          success: false, 
-          message: `تعذر الاتصال ببوابة بايموب (Paymob Connection Failed): ${paymobFetchErr.message}` 
-        }), {
-          status: 500,
-          headers: corsHeaders
-        });
+
+        if (intentionRes.ok) {
+          const intData = await intentionRes.json();
+          if (intData.status === "PAID" || intData.is_paid === true || intData.status === "SUCCESS") {
+            isSuccess = true;
+            const amountCents = intData.amount || intData.intention_detail?.amount || 0;
+            amountInEgp = amountCents / 100;
+          }
+        }
+      } catch (e) {
+        // التجربة الأولى لم تكتمل، ننتقل للثانية
       }
 
-      if (!paymobRes.ok) {
-        return new Response(JSON.stringify({ 
-          success: false, 
-          message: "لم يتم العثور على الفاتورة في نظام بايموب. تأكد من صحة الرقم المدخل." 
-        }), {
-          status: 200,
-          headers: corsHeaders
-        });
+      // التجربة الثانية: إذا لم تنجح الأولى، يجرب Acceptance API التقليدي
+      if (!isSuccess) {
+        try {
+          const acceptanceRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          });
+
+          if (acceptanceRes.ok) {
+            const accData = await acceptanceRes.json();
+            if (accData.success === true && accData.pending === false) {
+              isSuccess = true;
+              amountInEgp = accData.amount_cents ? (accData.amount_cents / 100) : 0;
+            }
+          }
+        } catch (e) {
+          // خطأ في الاتصال بالأكسبتنس
+        }
       }
 
-      let data;
-      try {
-        data = await paymobRes.json();
-      } catch (dataErr) {
-        return new Response(JSON.stringify({ 
-          success: false, 
-          message: "حدث خطأ أثناء قراءة بيانات الفاتورة من بايموب." 
-        }), {
-          status: 500,
-          headers: corsHeaders
-        });
-      }
-
-      // 5️⃣ التحقق من حالة الدفع الحقيقية
-      const isSuccess = (data.success === true) && (data.pending === false);
-
+      // 3️⃣ التحقق من النتيجة النهائية للطلب
       if (!isSuccess) {
         return new Response(JSON.stringify({ 
           success: false, 
-          message: "عملية الدفع هذه مرفوضة (Declined) أو لم تكتمل بنجاح في بايموب." 
+          message: "لم يتم العثور على الفاتورة في بايموب أو المعاملة مرفوضة/غير مكتملة." 
         }), {
           status: 200,
           headers: corsHeaders
         });
       }
-
-      // 6️⃣ استخراج المبلغ الفعلي بالجنيه
-      const amountInEgp = data.amount_cents ? (data.amount_cents / 100) : 0;
 
       if (amountInEgp <= 0) {
         return new Response(JSON.stringify({ 
           success: false, 
-          message: "تعذر قراءة قيمة الفاتورة الصحيحة من بايموب." 
+          message: "تعذر استخراج مبلغ الفاتورة الصحيح من بايموب." 
         }), {
           status: 200,
           headers: corsHeaders
         });
       }
 
-      // 7️⃣ الحفظ في Supabase مع معالجة أخطاء الإدخال
+      // 4️⃣ الحفظ الفوري المباشر في Supabase مع تحديد الباقة تلقائيًا
       const startDate = new Date();
       const isAnnual = amountInEgp >= 2000;
       const durationDays = isAnnual ? 365 : 30;
@@ -203,7 +201,7 @@ export default {
         });
       }
 
-      // 8️⃣ إرجاع استجابة النجاح النهائية
+      // 5️⃣ إرجاع استجابة النجاح الحقيقية
       return new Response(JSON.stringify({ 
         success: true, 
         amount: amountInEgp,
@@ -217,7 +215,6 @@ export default {
       });
 
     } catch (globalErr) {
-      // 9️⃣ الحاوية الشاملة لأي خطأ غير متوقع على مستوى السيرفر بالكامل
       return new Response(JSON.stringify({ 
         success: false, 
         message: `حدث خطأ غير متوقع في الخادم: ${globalErr.message || globalErr}` 
