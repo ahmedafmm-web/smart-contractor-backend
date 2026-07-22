@@ -7,19 +7,36 @@ export default {
       "Content-Type": "application/json"
     };
 
+    // 1️⃣ معالجة طلبات الـ Preflight (CORS)
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
 
     if (request.method !== "POST") {
-      return new Response(JSON.stringify({ success: false, message: "Method Not Allowed" }), {
+      return new Response(JSON.stringify({ 
+        success: false, 
+        message: "طريقة الطلب غير مسموح بها (Method Not Allowed)" 
+      }), {
         status: 405,
         headers: corsHeaders
       });
     }
 
     try {
-      const body = await request.json().catch(() => ({}));
+      // 2️⃣ قراءة وتحليل بيانات الطلب (Request Body) مع كشف أخطاء الـ JSON
+      let body;
+      try {
+        body = await request.json();
+      } catch (jsonErr) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: "خطأ في تنسيق البيانات المرسلة (Invalid JSON Format)" 
+        }), {
+          status: 400,
+          headers: corsHeaders
+        });
+      }
+
       const transaction_id = String(body.transaction_id || "").trim();
 
       const PAYMOB_SECRET_KEY = "Egy_sk_test_77f935610c2ff1f26dee1bf30935de08839d7f204af02861ca93bdaeb8f95242";
@@ -27,108 +44,166 @@ export default {
       const SUPABASE_ANON_KEY = "EyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1wrcbzlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzODQ5NzUsImV4cCI6MjA5OTk2MDk3NX0.hD7SWLaZ1c1tNfSNuKYHceaqCqS1riqTb1BxfM3_2uA"; 
 
       if (!transaction_id) {
-        return new Response(JSON.stringify({ success: false, message: "رقم المعاملة مطلوب" }), {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: "برجاء إدخال رقم المعاملة أو الإيصال." 
+        }), {
           status: 400,
           headers: corsHeaders
         });
       }
 
-      // 1️⃣ الفحص في Supabase لمنع استخدام نفس الريسيت مرتين
-      const supaCheck = await fetch(`${SUPABASE_URL}/rest/v1/payments?transaction_id=eq.${transaction_id}&select=transaction_id`, {
-        method: 'GET',
-        headers: {
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+      // 3️⃣ الفحص في Supabase مع معالجة خطأ الاتصال بقاعدة البيانات
+      let existingData;
+      try {
+        const supaCheck = await fetch(`${SUPABASE_URL}/rest/v1/payments?transaction_id=eq.${transaction_id}&select=transaction_id`, {
+          method: 'GET',
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+          }
+        });
+
+        if (supaCheck.ok) {
+          existingData = await supaCheck.json();
+          if (Array.isArray(existingData) && existingData.length > 0) {
+            return new Response(JSON.stringify({ 
+              success: false, 
+              already_used: true, 
+              message: "هذا الريسيت تم استخدامه وتفعيله من قبل!" 
+            }), {
+              status: 200,
+              headers: corsHeaders
+            });
+          }
         }
-      });
-
-      if (supaCheck.ok) {
-        const existingData = await supaCheck.json();
-        if (Array.isArray(existingData) && existingData.length > 0) {
-          return new Response(JSON.stringify({ 
-            success: false, 
-            already_used: true, 
-            message: "هذا الريسيت تم استخدامه وتفعيله من قبل!" 
-          }), {
-            status: 200,
-            headers: corsHeaders
-          });
-        }
-      }
-
-      // 2️⃣ الاستعلام المباشر والدقيق عن المبلغ من Paymob
-      let isSuccess = false;
-      let amountInEgp = 0;
-
-      // محاولة 1: الاستعلام من Paymob Acceptance API
-      const paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (paymobRes.ok) {
-        const data = await paymobRes.json();
-        isSuccess = (data.success === true) && (data.pending === false);
-        amountInEgp = data.amount_cents ? (data.amount_cents / 100) : 0;
-      }
-
-      // محاولة 2: خريطة مطابقة المبالغ بدقة للبيئة التجريبية (حل مشكلة 2000 ج.م)
-      if (!isSuccess || amountInEgp === 0) {
-        // تحديد المبالغ الخاصة بالريسيتات التجريبية بالدقة الكاملة
-        const annualReceipts = ["500048799", "570433375"]; // أرقام المعاملات/الأوردر السنوية
-        
-        if (annualReceipts.includes(transaction_id)) {
-          isSuccess = true;
-          amountInEgp = 2000; // الباقة السنوية
-        } else if (transaction_id === "500225966" || transaction_id === "570627047") {
-          isSuccess = true;
-          amountInEgp = 250;  // الباقة الشهرية
-        } else if (transaction_id.length >= 6) {
-          // الافتراضي لأي تجربة أخرى
-          isSuccess = true;
-          amountInEgp = 250;
-        }
-      }
-
-      if (!isSuccess) {
+      } catch (supaErr) {
         return new Response(JSON.stringify({ 
           success: false, 
-          message: "لم يتم العثور على المعاملة في بايموب أو لم تكتمل بنجاح." 
+          message: `خطأ أثناء الاتصال بقاعدة البيانات (Supabase Error): ${supaErr.message}` 
+        }), {
+          status: 500,
+          headers: corsHeaders
+        });
+      }
+
+      // 4️⃣ الاستعلام المباشر من Paymob مع معالجة خطأ الشبكة والـ API
+      let paymobRes;
+      try {
+        paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        });
+      } catch (paymobFetchErr) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: `تعذر الاتصال ببوابة بايموب (Paymob Connection Failed): ${paymobFetchErr.message}` 
+        }), {
+          status: 500,
+          headers: corsHeaders
+        });
+      }
+
+      if (!paymobRes.ok) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: "لم يتم العثور على الفاتورة في نظام بايموب. تأكد من صحة الرقم المدخل." 
         }), {
           status: 200,
           headers: corsHeaders
         });
       }
 
-      // 3️⃣ الحفظ الفوري المباشر في Supabase مع التواريخ الدقيقة (حل مشكلة عدم التسجيل)
+      let data;
+      try {
+        data = await paymobRes.json();
+      } catch (dataErr) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: "حدث خطأ أثناء قراءة بيانات الفاتورة من بايموب." 
+        }), {
+          status: 500,
+          headers: corsHeaders
+        });
+      }
+
+      // 5️⃣ التحقق من حالة الدفع الحقيقية
+      const isSuccess = (data.success === true) && (data.pending === false);
+
+      if (!isSuccess) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: "عملية الدفع هذه مرفوضة (Declined) أو لم تكتمل بنجاح في بايموب." 
+        }), {
+          status: 200,
+          headers: corsHeaders
+        });
+      }
+
+      // 6️⃣ استخراج المبلغ الفعلي بالجنيه
+      const amountInEgp = data.amount_cents ? (data.amount_cents / 100) : 0;
+
+      if (amountInEgp <= 0) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: "تعذر قراءة قيمة الفاتورة الصحيحة من بايموب." 
+        }), {
+          status: 200,
+          headers: corsHeaders
+        });
+      }
+
+      // 7️⃣ الحفظ في Supabase مع معالجة أخطاء الإدخال
       const startDate = new Date();
-      const durationDays = amountInEgp >= 2000 ? 365 : 30; // 365 يوم للسنوي، 30 يوم للشهري
+      const isAnnual = amountInEgp >= 2000;
+      const durationDays = isAnnual ? 365 : 30;
       const endDate = new Date(startDate.getTime() + (durationDays * 24 * 60 * 60 * 1000));
 
       const insertPayload = {
         transaction_id: transaction_id,
         amount: amountInEgp,
-        plan_type: amountInEgp >= 2000 ? "annual" : "monthly",
+        plan_type: isAnnual ? "annual" : "monthly",
         activated_at: startDate.toISOString(),
         expires_at: endDate.toISOString(),
         created_at: startDate.toISOString()
       };
 
-      await fetch(`${SUPABASE_URL}/rest/v1/payments`, {
-        method: 'POST',
-        headers: {
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify(insertPayload)
-      });
+      try {
+        const supaInsert = await fetch(`${SUPABASE_URL}/rest/v1/payments`, {
+          method: 'POST',
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal'
+          },
+          body: JSON.stringify(insertPayload)
+        });
 
-      // 4️⃣ الرد النهائي للعميل بالمبلغ والتواريخ المحسوبة
+        if (!supaInsert.ok) {
+          const insertErrText = await supaInsert.text();
+          return new Response(JSON.stringify({ 
+            success: false, 
+            message: `فشل حفظ عملية التفعيل في قاعدة البيانات: ${insertErrText}` 
+          }), {
+            status: 500,
+            headers: corsHeaders
+          });
+        }
+      } catch (insertErr) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: `خطأ أثناء تسجيل الاشتراك في قاعدة البيانات: ${insertErr.message}` 
+        }), {
+          status: 500,
+          headers: corsHeaders
+        });
+      }
+
+      // 8️⃣ إرجاع استجابة النجاح النهائية
       return new Response(JSON.stringify({ 
         success: true, 
         amount: amountInEgp,
@@ -141,8 +216,12 @@ export default {
         headers: corsHeaders
       });
 
-    } catch (err) {
-      return new Response(JSON.stringify({ success: false, message: err.message || "حدث خطأ غير متوقع" }), {
+    } catch (globalErr) {
+      // 9️⃣ الحاوية الشاملة لأي خطأ غير متوقع على مستوى السيرفر بالكامل
+      return new Response(JSON.stringify({ 
+        success: false, 
+        message: `حدث خطأ غير متوقع في الخادم: ${globalErr.message || globalErr}` 
+      }), {
         status: 500,
         headers: corsHeaders
       });
