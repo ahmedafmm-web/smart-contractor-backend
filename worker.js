@@ -1,22 +1,22 @@
 export default {
   async fetch(request, env) {
+    // إعداد الهيدرز الموحدة لكل الاستجابات (حل مشكلة CORS نهائياً)
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Content-Type": "application/json"
+    };
+
+    // 1️⃣ معالجة طلبات الاستكشاف (Preflight OPTIONS)
     if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        },
-      });
+      return new Response(null, { headers: corsHeaders });
     }
 
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ success: false, message: "Method Not Allowed" }), {
         status: 405,
-        headers: { 
-          "Access-Control-Allow-Origin": "*", 
-          "Content-Type": "application/json" 
-        }
+        headers: corsHeaders
       });
     }
 
@@ -31,7 +31,7 @@ export default {
       if (!transaction_id) {
         return new Response(JSON.stringify({ success: false, message: "رقم المعاملة مطلوب" }), {
           status: 400,
-          headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" }
+          headers: corsHeaders
         });
       }
 
@@ -53,7 +53,7 @@ export default {
             message: "هذا الريسيت تم استخدامه وتفعيله من قبل!" 
           }), {
             status: 200,
-            headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" }
+            headers: corsHeaders
           });
         }
       }
@@ -70,7 +70,7 @@ export default {
       if (!paymobRes.ok) {
         return new Response(JSON.stringify({ success: false, message: "لم يتم العثور على المعاملة في Paymob" }), {
           status: 200,
-          headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" }
+          headers: corsHeaders
         });
       }
 
@@ -85,13 +85,13 @@ export default {
         already_used: false 
       }), {
         status: 200,
-        headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" }
+        headers: corsHeaders
       });
 
     } catch (err) {
       return new Response(JSON.stringify({ success: false, message: err.message || "حدث خطأ غير متوقع" }), {
         status: 500,
-        headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" }
+        headers: corsHeaders
       });
     }
   }
