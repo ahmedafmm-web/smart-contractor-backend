@@ -1,6 +1,5 @@
 export default {
   async fetch(request, env) {
-    // إعداد الهيدرز الموحدة لكل الاستجابات (حل مشكلة CORS نهائياً)
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -8,7 +7,6 @@ export default {
       "Content-Type": "application/json"
     };
 
-    // 1️⃣ معالجة طلبات الاستكشاف (Preflight OPTIONS)
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
@@ -35,7 +33,7 @@ export default {
         });
       }
 
-      // 1️⃣ الفحص في Supabase
+      // 1️⃣ الفحص في Supabase تكرار الريسيت
       const supaCheck = await fetch(`${SUPABASE_URL}/rest/v1/payments?transaction_id=eq.${transaction_id}&select=transaction_id`, {
         method: 'GET',
         headers: {
@@ -58,8 +56,8 @@ export default {
         }
       }
 
-      // 2️⃣ الفحص في Paymob
-      const paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+      // 2️⃣ الفحص في Paymob بـ Token
+      let paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
         method: 'GET',
         headers: {
           'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
@@ -67,8 +65,23 @@ export default {
         }
       });
 
+      // تجربة Bearer Header إذا فشلت المحاولة الأولى
       if (!paymobRes.ok) {
-        return new Response(JSON.stringify({ success: false, message: "لم يتم العثور على المعاملة في Paymob" }), {
+        paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${PAYMOB_SECRET_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        });
+      }
+
+      if (!paymobRes.ok) {
+        const errData = await paymobRes.text().catch(() => "");
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: `خطأ من Paymob (${paymobRes.status}): يرجى التأكد أن الرقم هو Transaction ID للتجربة.` 
+        }), {
           status: 200,
           headers: corsHeaders
         });
