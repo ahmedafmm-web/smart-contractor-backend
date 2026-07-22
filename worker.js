@@ -27,13 +27,13 @@ export default {
       const SUPABASE_ANON_KEY = "EyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzODQ5NzUsImV4cCI6MjA5OTk2MDk3NX0.hD7SWLaZ1c1tNfSNuKYHceaqCqS1riqTb1BxfM3_2uA"; 
 
       if (!transaction_id) {
-        return new Response(JSON.stringify({ success: false, message: "رقم المعاملة أو الإيصال مطلوب" }), {
+        return new Response(JSON.stringify({ success: false, message: "رقم المعاملة مطلوب" }), {
           status: 400,
           headers: corsHeaders
         });
       }
 
-      // 1️⃣ الفحص في Supabase لتكرار الريسيت
+      // 1. فحص قاعدة بيانات Supabase لمنع استخدام نفس رقم المعاملة مرتين
       const supaCheck = await fetch(`${SUPABASE_URL}/rest/v1/payments?transaction_id=eq.${transaction_id}&select=transaction_id`, {
         method: 'GET',
         headers: {
@@ -56,8 +56,8 @@ export default {
         }
       }
 
-      // 2️⃣ المحاولة الأولى: الفحص المباشر كـ Transaction ID
-      let paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+      // 2. الاستعلام المباشر والصحيح من Paymob Transactions API
+      const paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
         method: 'GET',
         headers: {
           'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
@@ -65,51 +65,34 @@ export default {
         }
       });
 
-      let data = null;
-
-      if (paymobRes.ok) {
-        data = await paymobRes.json();
-      } else {
-        // 3️⃣ المحاولة الثانية: الفحص كـ Order ID / Receipt No إذا فشل الفحص الأول
-        const orderRes = await fetch(`https://accept.paymob.com/api/ecommerce/orders/${transaction_id}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
-            'Content-Type': 'application/json'
-          }
-        });
-
-        if (orderRes.ok) {
-          const orderData = await orderRes.json();
-          // أخذ أول معاملة ناجحة مرتبطة بهذا الطلب
-          if (orderData.tx_ns && orderData.tx_ns.length > 0) {
-            data = orderData.tx_ns[0];
-          } else {
-            // محاكاة استرجاع البيانات بالعمق من الطلب نفسه
-            data = {
-              success: orderData.is_payment_locked || orderData.paid_amount_cents > 0,
-              pending: false,
-              amount_cents: orderData.amount_cents || orderData.paid_amount_cents
-            };
-          }
-        }
-      }
-
-      if (!data) {
+      if (!paymobRes.ok) {
         return new Response(JSON.stringify({ 
           success: false, 
-          message: `لم يتم العثور على المعاملة أو الإيصال (${transaction_id}) في Paymob.` 
+          message: "لم يتم العثور على المعاملة في بايموب. تأكد من إدخال رقم المعاملة (Transaction ID) الصحيح." 
         }), {
           status: 200,
           headers: corsHeaders
         });
       }
 
+      const data = await paymobRes.json();
+
+      // التحقق من أن العملية تمت بنجاح وليست معلقة أو مرفوضة
       const isSuccess = (data.success === true) && (data.pending === false);
       const amountInEgp = data.amount_cents ? (data.amount_cents / 100) : 0;
 
+      if (!isSuccess) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: "هذه المعاملة لم تكتمل بنجاح أو مرفوضة من البوابة التجريبية." 
+        }), {
+          status: 200,
+          headers: corsHeaders
+        });
+      }
+
       return new Response(JSON.stringify({ 
-        success: isSuccess, 
+        success: true, 
         amount: amountInEgp,
         already_used: false 
       }), {
