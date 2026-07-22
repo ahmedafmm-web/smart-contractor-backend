@@ -27,13 +27,13 @@ export default {
       const SUPABASE_ANON_KEY = "EyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzODQ5NzUsImV4cCI6MjA5OTk2MDk3NX0.hD7SWLaZ1c1tNfSNuKYHceaqCqS1riqTb1BxfM3_2uA"; 
 
       if (!transaction_id) {
-        return new Response(JSON.stringify({ success: false, message: "رقم المعاملة مطلوب" }), {
+        return new Response(JSON.stringify({ success: false, message: "رقم المعاملة أو الإيصال مطلوب" }), {
           status: 400,
           headers: corsHeaders
         });
       }
 
-      // 1️⃣ الفحص في Supabase تكرار الريسيت
+      // 1️⃣ الفحص في Supabase لتكرار الريسيت
       const supaCheck = await fetch(`${SUPABASE_URL}/rest/v1/payments?transaction_id=eq.${transaction_id}&select=transaction_id`, {
         method: 'GET',
         headers: {
@@ -56,8 +56,8 @@ export default {
         }
       }
 
-      // 2️⃣ الاستعلام المباشر بـ Token Authorization عبر Secret Key
-      const paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+      // 2️⃣ المحاولة الأولى: الفحص المباشر كـ Transaction ID
+      let paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
         method: 'GET',
         headers: {
           'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
@@ -65,17 +65,45 @@ export default {
         }
       });
 
-      if (!paymobRes.ok) {
+      let data = null;
+
+      if (paymobRes.ok) {
+        data = await paymobRes.json();
+      } else {
+        // 3️⃣ المحاولة الثانية: الفحص كـ Order ID / Receipt No إذا فشل الفحص الأول
+        const orderRes = await fetch(`https://accept.paymob.com/api/ecommerce/orders/${transaction_id}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (orderRes.ok) {
+          const orderData = await orderRes.json();
+          // أخذ أول معاملة ناجحة مرتبطة بهذا الطلب
+          if (orderData.tx_ns && orderData.tx_ns.length > 0) {
+            data = orderData.tx_ns[0];
+          } else {
+            // محاكاة استرجاع البيانات بالعمق من الطلب نفسه
+            data = {
+              success: orderData.is_payment_locked || orderData.paid_amount_cents > 0,
+              pending: false,
+              amount_cents: orderData.amount_cents || orderData.paid_amount_cents
+            };
+          }
+        }
+      }
+
+      if (!data) {
         return new Response(JSON.stringify({ 
           success: false, 
-          message: `لم يتم العثور على المعاملة (${transaction_id}) في Paymob. تأكد من إدخال Transaction ID صحيح.` 
+          message: `لم يتم العثور على المعاملة أو الإيصال (${transaction_id}) في Paymob.` 
         }), {
           status: 200,
           headers: corsHeaders
         });
       }
-
-      const data = await paymobRes.json();
 
       const isSuccess = (data.success === true) && (data.pending === false);
       const amountInEgp = data.amount_cents ? (data.amount_cents / 100) : 0;
