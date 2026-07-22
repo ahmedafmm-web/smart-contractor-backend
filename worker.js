@@ -33,7 +33,7 @@ export default {
         });
       }
 
-      // 1️⃣ الفحص في Supabase تكرار الريسيت
+      // 1️⃣ الفحص في Supabase لتكرار الريسيت
       const supaCheck = await fetch(`${SUPABASE_URL}/rest/v1/payments?transaction_id=eq.${transaction_id}&select=transaction_id`, {
         method: 'GET',
         headers: {
@@ -56,31 +56,30 @@ export default {
         }
       }
 
-      // 2️⃣ الفحص في Paymob بـ Token
+      // 2️⃣ الفحص في Paymob المحدث بدعم Secret Key
+      // المحاولة الأولى: تمرير الـ Secret Key كـ Header مباشر حسب توثيق Paymob الحديث
       let paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
         method: 'GET',
         headers: {
-          'Authorization': `Token ${PAYMOB_SECRET_KEY}`,
+          'Secret-Key': PAYMOB_SECRET_KEY,
           'Content-Type': 'application/json'
         }
       });
 
-      // تجربة Bearer Header إذا فشلت المحاولة الأولى
+      // المحاولة الثانية: إذا لم يتوفر Header Secret-Key تجربة الـ Secret Key بدون كلمة Token
       if (!paymobRes.ok) {
-        paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+        paymobRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}?secret_key=${PAYMOB_SECRET_KEY}`, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${PAYMOB_SECRET_KEY}`,
             'Content-Type': 'application/json'
           }
         });
       }
 
       if (!paymobRes.ok) {
-        const errData = await paymobRes.text().catch(() => "");
         return new Response(JSON.stringify({ 
           success: false, 
-          message: `خطأ من Paymob (${paymobRes.status}): يرجى التأكد أن الرقم هو Transaction ID للتجربة.` 
+          message: `فشل التحقق من Paymob (${paymobRes.status}). تأكد من صحة رقم المعاملة.` 
         }), {
           status: 200,
           headers: corsHeaders
