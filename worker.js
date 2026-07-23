@@ -15,7 +15,10 @@ export default {
       return new Response(JSON.stringify({ 
         success: false, 
         message: "طريقة الطلب غير مسموح بها (Method Not Allowed)" 
-      }), { status: 405, headers: corsHeaders });
+      }), {
+        status: 405,
+        headers: corsHeaders
+      });
     }
 
     try {
@@ -26,13 +29,16 @@ export default {
         return new Response(JSON.stringify({ 
           success: false, 
           message: "خطأ في تنسيق البيانات المرسلة (Invalid JSON Format)" 
-        }), { status: 400, headers: corsHeaders });
+        }), {
+          status: 400,
+          headers: corsHeaders
+        });
       }
 
       const PAYMOB_SECRET_KEY = "Egy_sk_test_77f935610c2ff1f26dee1bf30935de08839d7f204af02861ca93bdaeb8f95242";
       const PAYMOB_PUBLIC_KEY = "egy_pk_test_dxpugYKGn9MzQzbCVItLjsaskLivv7cg";
       const SUPABASE_URL = "https://lwffkkzdkvafyuwrcbzl.supabase.co"; 
-      const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1wrcbzlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzODQ5NzUsImV4cCI6MjA5OTk2MDk3NX0.hD7SWLaZ1c1tNfSNuKYHceaqCqS1riqTb1BxfM3_2uA"; 
+      const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzODQ5NzUsImV4cCI6MjA5OTk2MDk3NX0.hD7SWLaZ1c1tNfSNuKYHceaqCqS1riqTb1BxfM3_2uA"; 
 
       // =========================================================
       // 🆕 1. إنشاء جلسة دفع ديناميكية (Dynamic Payment Intent)
@@ -40,7 +46,7 @@ export default {
       if (body.action === "create_payment_intent") {
         const planType = body.plan_type || "monthly";
         const deviceId = body.device_id || "UNKNOWN";
-        const amountCents = (planType === "yearly") ? 200000 : 25000; // 2000ج أو 250ج بالقرش
+        const amountCents = (planType === "yearly") ? 200000 : 25000;
 
         const paymobIntentRes = await fetch("https://accept.paymob.com/api/ecommerce/payment-intents", {
           method: "POST",
@@ -82,7 +88,7 @@ export default {
       }
 
       // =========================================================
-      // 🔄 2. الكود القديم الأصلي (الفحص والتفعيل بـ Transaction ID)
+      // 🔄 2. الكود الأصلي (الفحص والتفعيل بـ Transaction ID)
       // =========================================================
       const transaction_id = String(body.transaction_id || "").trim();
 
@@ -90,7 +96,10 @@ export default {
         return new Response(JSON.stringify({ 
           success: false, 
           message: "برجاء إدخال رقم المعاملة أو الإيصال." 
-        }), { status: 400, headers: corsHeaders });
+        }), {
+          status: 400,
+          headers: corsHeaders
+        });
       }
 
       // أ) الفحص في Supabase لمنع إعادة الاستخدام
@@ -110,14 +119,20 @@ export default {
               success: false, 
               already_used: true, 
               message: "هذا الريسيت تم استخدامه وتفعيله من قبل!" 
-            }), { status: 200, headers: corsHeaders });
+            }), {
+              status: 200,
+              headers: corsHeaders
+            });
           }
         }
       } catch (supaErr) {
         return new Response(JSON.stringify({ 
           success: false, 
           message: `خطأ أثناء الاتصال بقاعدة البيانات: ${supaErr.message}` 
-        }), { status: 500, headers: corsHeaders });
+        }), {
+          status: 500,
+          headers: corsHeaders
+        });
       }
 
       // ب) الاستعلام المباشر من Paymob API
@@ -164,7 +179,10 @@ export default {
         return new Response(JSON.stringify({ 
           success: false, 
           message: "لم يتم العثور على الفاتورة في بايموب أو المعاملة مرفوضة/غير مكتملة." 
-        }), { status: 200, headers: corsHeaders });
+        }), {
+          status: 200,
+          headers: corsHeaders
+        });
       }
 
       // د) الحفظ الفوري في Supabase
@@ -199,13 +217,19 @@ export default {
           return new Response(JSON.stringify({ 
             success: false, 
             message: `فشل حفظ عملية التفعيل في قاعدة البيانات: ${insertErrText}` 
-          }), { status: 500, headers: corsHeaders });
+          }), {
+            status: 500,
+            headers: corsHeaders
+          });
         }
       } catch (insertErr) {
         return new Response(JSON.stringify({ 
           success: false, 
           message: `خطأ أثناء تسجيل الاشتراك في قاعدة البيانات: ${insertErr.message}` 
-        }), { status: 500, headers: corsHeaders });
+        }), {
+          status: 500,
+          headers: corsHeaders
+        });
       }
 
       return new Response(JSON.stringify({ 
@@ -215,13 +239,20 @@ export default {
         activated_at: insertPayload.activated_at,
         expires_at: insertPayload.expires_at,
         already_used: false 
-      }), { status: 200, headers: corsHeaders });
+      }), {
+        status: 200,
+        headers: corsHeaders
+      });
 
     } catch (globalErr) {
       return new Response(JSON.stringify({ 
         success: false, 
         message: `حدث خطأ غير متوقع في الخادم: ${globalErr.message || globalErr}` 
-      }), { status: 500, headers: corsHeaders });
+      }), {
+        status: 500,
+        headers: corsHeaders
+      });
     }
   }
 };
+ 
