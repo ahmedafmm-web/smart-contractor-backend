@@ -1,6 +1,5 @@
 export default {
   async fetch(request, env, ctx) {
-    // 1. التعامل مع CORS
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -23,10 +22,9 @@ export default {
 
       const PAYMOB_SECRET_KEY = env.PAYMOB_SECRET_KEY;
       const PAYMOB_PUBLIC_KEY = env.PAYMOB_PUBLIC_KEY;
-      const SUPABASE_URL = env.SUPABASE_URL;
+      const SUPABASE_URL = (env.SUPABASE_URL || "").trim().replace(/\/$/, "");
       const SUPABASE_SERVICE_ROLE_KEY = env.SUPABASE_SERVICE_ROLE_KEY;
 
-      // التأكد من المتغيرات
       if (!PAYMOB_SECRET_KEY || !PAYMOB_PUBLIC_KEY) {
         return new Response(JSON.stringify({
           success: false,
@@ -34,7 +32,7 @@ export default {
         }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      // 2. إنشاء جلسة الدفع (Payment Intent)
+      // 1. إنشاء جلسة الدفع (Payment Intent)
       if (body.action === "create_payment_intent") {
         const planType = body.plan_type || "monthly";
         const deviceId = body.device_id || "UNKNOWN";
@@ -63,6 +61,16 @@ export default {
           })
         });
 
+        // التحقق من أن الرد JSON وليس HTML
+        const contentType = paymobIntentRes.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
+          const rawText = await paymobIntentRes.text();
+          return new Response(JSON.stringify({
+            success: false,
+            message: `استجابة غير متوقعة من Paymob (غير مقبولة): ${rawText.substring(0, 100)}`
+          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
         const intentData = await paymobIntentRes.json();
 
         if (paymobIntentRes.ok && intentData.client_secret) {
@@ -82,7 +90,7 @@ export default {
         }
       }
 
-      // 3. التحقق والتفعيل
+      // 2. التحقق والتفعيل
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
 
@@ -101,10 +109,11 @@ export default {
           }
         });
 
-        if (!verifyRes.ok) {
+        const contentType = verifyRes.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
           return new Response(JSON.stringify({
             success: false,
-            message: "تعذر التحقق من رقم العملية مع Paymob."
+            message: "تعذر الحصول على استجابة صحيحة من Paymob للتحقق."
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
