@@ -1,3 +1,9 @@
 name = "contractor"
 main = "worker.js"
 compatibility_date = "2026-07-22"
+
+[vars]
+PAYMOB_SECRET_KEY = "egy_sk_test_77f935610c2ff1f26dee1bf30935de08839d7f204af02861ca93bdaeb8f95242"
+PAYMOB_PUBLIC_KEY = "egy_pk_test_dxpugYKGn9MzQzbCVItLjsaskLivv7cg"
+SUPABASE_URL = "https://lwffkzdkvafyuwrcbzl.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDM4NDk3NSwiZXhwIjoyMDk5OTYwOTc1fQ.Kg8RxKkkkHI6WAKUg1FDrc9t5hQEG68Hu46p5pHxbvw"
