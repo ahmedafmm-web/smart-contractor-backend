@@ -10,14 +10,14 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    if (request.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Method Not Allowed" }), {
-        status: 405,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
-
     try {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method Not Allowed" }), {
+          status: 405,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
       const body = await request.json();
 
       const PAYMOB_SECRET_KEY = env.PAYMOB_SECRET_KEY;
@@ -25,7 +25,15 @@ export default {
       const SUPABASE_URL = env.SUPABASE_URL;
       const SUPABASE_SERVICE_ROLE_KEY = env.SUPABASE_SERVICE_ROLE_KEY;
 
-      // 1. إنشاء جلسة دفع ديناميكية (Dynamic Payment Intent)
+      // التأكد من وجود المفاتيح
+      if (!PAYMOB_SECRET_KEY || !PAYMOB_PUBLIC_KEY) {
+        return new Response(JSON.stringify({
+          success: false,
+          message: "خطأ في السيرفر: مفاتيح Paymob غير معرفة في Cloudflare Environment Variables."
+        }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // 1. إنشاء جلسة دفع ديناميكية
       if (body.action === "create_payment_intent") {
         const planType = body.plan_type || "monthly";
         const deviceId = body.device_id || "UNKNOWN";
@@ -34,39 +42,133 @@ export default {
         const CARD_INTEGRATION_ID = 5790552;
         const WALLET_INTEGRATION_ID = 5783298;
 
-        try {
-          const paymobIntentRes = await fetch("https://accept.paymob.com/api/ecommerce/payment-intents", {
+        const paymobIntentRes = await fetch("https://accept.paymob.com/api/ecommerce/payment-intents", {
+          method: "POST",
+          headers: {
+            "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            amount: amountCents,
+            currency: "EGP",
+            payment_methods: [CARD_INTEGRATION_ID, WALLET_INTEGRATION_ID],
+            billing_data: {
+              first_name: "Smart",
+              last_name: "Contractor",
+              email: "client@smartcontractor.com",
+              phone_number: "+201000000000"
+            },
+            special_reference: `SC_${deviceId}_${Date.now()}`
+          })
+        });
+
+        const intentData = await paymobIntentRes.json();
+
+        if (paymobIntentRes.ok && intentData.client_secret) {
+          const clientSecret = intentData.client_secret;
+          const paymentUrl = `https://accept.paymob.com/unifiedcheckout/?publicKey=${PAYMOB_PUBLIC_KEY}&clientSecret=${clientSecret}`;
+          
+          return new Response(JSON.stringify({
+            success: true,
+            payment_url: paymentUrl
+          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        } else {
+          const errorDetails = intentData.detail || intentData.message || JSON.stringify(intentData);
+          return new Response(JSON.stringify({
+            success: false,
+            message: `رفض Paymob: ${errorDetails}`
+          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+      }
+
+      // 2. التحقق من العملية
+      if (body.action === "verify_payment") {
+        const { transaction_id, device_id } = body;
+
+        if (!transaction_id || !device_id) {
+          return new Response(JSON.stringify({
+            success: false,
+            message: "يرجى إدخال رقم العملية واختيار كود الجهاز."
+          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        const verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+          method: "GET",
+          headers: {
+            "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
+            "Content-Type": "application/json"
+          }
+        });
+
+        if (!verifyRes.ok) {
+          return new Response(JSON.stringify({
+            success: false,
+            message: "تعذر التحقق من رقم العملية مع Paymob."
+          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        const txData = await verifyRes.json();
+
+        if (txData.success && txData.pending === false) {
+          const amountCents = txData.amount_cents;
+          let daysToAdd = (amountCents >= 200000) ? 365 : 30;
+
+          const expiryDate = new Date();
+          expiryDate.setDate(expiryDate.getDate() + daysToAdd);
+
+          const supabaseRes = await fetch(`${SUPABASE_URL}/rest/v1/subscriptions`, {
             method: "POST",
             headers: {
-              "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
-              "Content-Type": "application/json"
+              "apikey": SUPABASE_SERVICE_ROLE_KEY,
+              "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+              "Content-Type": "application/json",
+              "Prefer": "resolution=merge-duplicates"
             },
             body: JSON.stringify({
-              amount: amountCents,
-              currency: "EGP",
-              payment_methods: [CARD_INTEGRATION_ID, WALLET_INTEGRATION_ID],
-              billing_data: {
-                first_name: "Smart",
-                last_name: "Contractor",
-                email: "client@smartcontractor.com",
-                phone_number: "+201000000000"
-              },
-              special_reference: `SC_${deviceId}_${Date.now()}`
+              device_id: device_id,
+              status: "active",
+              expires_at: expiryDate.toISOString(),
+              last_transaction_id: String(transaction_id),
+              updated_at: new Date().toISOString()
             })
           });
 
-          const intentData = await paymobIntentRes.json();
-
-          if (paymobIntentRes.ok && intentData.client_secret) {
-            const clientSecret = intentData.client_secret;
-            const paymentUrl = `https://accept.paymob.com/unifiedcheckout/?publicKey=${PAYMOB_PUBLIC_KEY}&clientSecret=${clientSecret}`;
-            
+          if (supabaseRes.ok) {
             return new Response(JSON.stringify({
               success: true,
-              payment_url: paymentUrl
-            }), { 
-              status: 200, 
-              headers: { ...corsHeaders, "Content-Type": "application/json" } 
+              message: `تم التفعيل بنجاح! ينتهي اشتراكك في: ${expiryDate.toLocaleDateString('ar-EG')}`
+            }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          } else {
+            return new Response(JSON.stringify({
+              success: false,
+              message: "تم التحقق من الدفع، ولكن حدث خطأ أثناء التحديث في Supabase."
+            }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          }
+        } else {
+          return new Response(JSON.stringify({
+            success: false,
+            message: "العملية لم تكتمل بنجاح أو ما زالت قيد الانتظار."
+          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+      }
+
+      return new Response(JSON.stringify({ success: false, message: "Invalid Action" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+
+    } catch (err) {
+      // إرجاع أي استثناء كـ JSON بدلاً من 500 HTML
+      return new Response(JSON.stringify({
+        success: false,
+        message: `خطأ برمجي داخلي في الـ Worker: ${err.message}`
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+  }
+};
             });
           } else {
             const errorDetails = intentData.detail || intentData.message || JSON.stringify(intentData);
