@@ -32,7 +32,7 @@ export default {
         }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      // 1. إنشاء جلسة الدفع (Payment Intent)
+      // 1. إنشاء جلسة الدفع (Payment Intent / Intention)
       if (body.action === "create_payment_intent") {
         const planType = body.plan_type || "monthly";
         const deviceId = body.device_id || "UNKNOWN";
@@ -41,7 +41,7 @@ export default {
         const CARD_INTEGRATION_ID = 5790552;
         const WALLET_INTEGRATION_ID = 5783298;
 
-        const paymobIntentRes = await fetch("https://accept.paymob.com/api/ecommerce/payment-intents", {
+        const paymobIntentRes = await fetch("https://accept.paymob.com/v1/intention/", {
           method: "POST",
           headers: {
             "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
@@ -61,20 +61,19 @@ export default {
           })
         });
 
-        // التحقق من أن الرد JSON وليس HTML
         const contentType = paymobIntentRes.headers.get("content-type") || "";
         if (!contentType.includes("application/json")) {
           const rawText = await paymobIntentRes.text();
           return new Response(JSON.stringify({
             success: false,
-            message: `استجابة غير متوقعة من Paymob (غير مقبولة): ${rawText.substring(0, 100)}`
+            message: `استجابة غير متوقعة من Paymob: ${rawText.substring(0, 100)}`
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
         const intentData = await paymobIntentRes.json();
 
-        if (paymobIntentRes.ok && intentData.client_secret) {
-          const clientSecret = intentData.client_secret;
+        if (paymobIntentRes.ok && (intentData.client_secret || intentData.cs)) {
+          const clientSecret = intentData.client_secret || intentData.cs;
           const paymentUrl = `https://accept.paymob.com/unifiedcheckout/?publicKey=${PAYMOB_PUBLIC_KEY}&clientSecret=${clientSecret}`;
           
           return new Response(JSON.stringify({
