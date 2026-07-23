@@ -91,7 +91,7 @@ export default {
         }
       }
 
-      // 2. التحقق والتفعيل
+      // 2. التحقق والتفعيل (تم تعديل التوثيق مع Paymob فقط لضمان الفحص الصحيح)
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
 
@@ -102,10 +102,26 @@ export default {
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
+        // جلب Auth Token مؤقت للتحقق من العملية بدون رفض من السيرفر
+        let authToken = "";
+        try {
+          const authRes = await fetch("https://accept.paymob.com/api/auth/tokens", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ api_key: PAYMOB_SECRET_KEY })
+          });
+          if (authRes.ok) {
+            const authData = await authRes.json();
+            authToken = authData.token;
+          }
+        } catch (e) {
+          console.error("Auth token fetch failed, falling back to Secret/Token");
+        }
+
         const verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
           method: "GET",
           headers: {
-            "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
+            "Authorization": authToken ? `Bearer ${authToken}` : `Token ${PAYMOB_SECRET_KEY}`,
             "Content-Type": "application/json"
           }
         });
