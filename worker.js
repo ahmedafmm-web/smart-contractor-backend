@@ -1,5 +1,6 @@
 export default {
   async fetch(request, env, ctx) {
+    // 1. التعامل مع CORS
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -25,15 +26,15 @@ export default {
       const SUPABASE_URL = env.SUPABASE_URL;
       const SUPABASE_SERVICE_ROLE_KEY = env.SUPABASE_SERVICE_ROLE_KEY;
 
-      // التأكد من وجود المفاتيح
+      // التأكد من المتغيرات
       if (!PAYMOB_SECRET_KEY || !PAYMOB_PUBLIC_KEY) {
         return new Response(JSON.stringify({
           success: false,
-          message: "خطأ في السيرفر: مفاتيح Paymob غير معرفة في Cloudflare Environment Variables."
+          message: "خطأ: مفاتيح Paymob غير معرفة في إعدادات Cloudflare Variables."
         }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      // 1. إنشاء جلسة دفع ديناميكية
+      // 2. إنشاء جلسة الدفع (Payment Intent)
       if (body.action === "create_payment_intent") {
         const planType = body.plan_type || "monthly";
         const deviceId = body.device_id || "UNKNOWN";
@@ -81,7 +82,7 @@ export default {
         }
       }
 
-      // 2. التحقق من العملية
+      // 3. التحقق والتفعيل
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
 
@@ -158,121 +159,11 @@ export default {
       });
 
     } catch (err) {
-      // إرجاع أي استثناء كـ JSON بدلاً من 500 HTML
       return new Response(JSON.stringify({
         success: false,
-        message: `خطأ برمجي داخلي في الـ Worker: ${err.message}`
+        message: `خطأ في الـ Worker: ${err.message}`
       }), {
         status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
-  }
-};
-            });
-          } else {
-            const errorDetails = intentData.detail || intentData.message || JSON.stringify(intentData);
-            return new Response(JSON.stringify({
-              success: false,
-              message: `رفض Paymob: ${errorDetails}`
-            }), { 
-              status: 200, 
-              headers: { ...corsHeaders, "Content-Type": "application/json" } 
-            });
-          }
-        } catch (err) {
-          return new Response(JSON.stringify({
-            success: false,
-            message: `خطأ اتصال: ${err.message}`
-          }), { 
-            status: 200, 
-            headers: { ...corsHeaders, "Content-Type": "application/json" } 
-          });
-        }
-      }
-
-      // 2. التحقق من العملية والتفعيل في Supabase
-      if (body.action === "verify_payment") {
-        const { transaction_id, device_id } = body;
-
-        if (!transaction_id || !device_id) {
-          return new Response(JSON.stringify({
-            success: false,
-            message: "يرجى إدخال رقم العملية واختيار كود الجهاز."
-          }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-
-        const verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
-          method: "GET",
-          headers: {
-            "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
-            "Content-Type": "application/json"
-          }
-        });
-
-        if (!verifyRes.ok) {
-          return new Response(JSON.stringify({
-            success: false,
-            message: "تعذر التحقق من رقم العملية مع Paymob. تأكد من الرقم وكرر المحاولة."
-          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-
-        const txData = await verifyRes.json();
-
-        if (txData.success && txData.pending === false) {
-          const amountCents = txData.amount_cents;
-          let daysToAdd = 30;
-          if (amountCents >= 200000) {
-            daysToAdd = 365;
-          }
-
-          const expiryDate = new Date();
-          expiryDate.setDate(expiryDate.getDate() + daysToAdd);
-
-          const supabaseRes = await fetch(`${SUPABASE_URL}/rest/v1/subscriptions`, {
-            method: "POST",
-            headers: {
-              "apikey": SUPABASE_SERVICE_ROLE_KEY,
-              "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-              "Content-Type": "application/json",
-              "Prefer": "resolution=merge-duplicates"
-            },
-            body: JSON.stringify({
-              device_id: device_id,
-              status: "active",
-              expires_at: expiryDate.toISOString(),
-              last_transaction_id: String(transaction_id),
-              updated_at: new Date().toISOString()
-            })
-          });
-
-          if (supabaseRes.ok) {
-            return new Response(JSON.stringify({
-              success: true,
-              message: `تم التفعيل بنجاح! ينتهي اشتراكك في: ${expiryDate.toLocaleDateString('ar-EG')}`
-            }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-          } else {
-            return new Response(JSON.stringify({
-              success: false,
-              message: "تم التحقق من الدفع، ولكن حدث خطأ أثناء التحديث في قاعدة البيانات."
-            }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-          }
-        } else {
-          return new Response(JSON.stringify({
-            success: false,
-            message: "العملية لم تكتمل بنجاح أو ما زالت قيد الانتظار."
-          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-      }
-
-      return new Response(JSON.stringify({ error: "Invalid Action" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-
-    } catch (err) {
-      return new Response(JSON.stringify({ success: false, message: err.message }), {
-        status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
