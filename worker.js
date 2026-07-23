@@ -20,10 +20,10 @@ export default {
 
       const body = await request.json();
 
-      const PAYMOB_SECRET_KEY = env.PAYMOB_SECRET_KEY;
-      const PAYMOB_PUBLIC_KEY = env.PAYMOB_PUBLIC_KEY;
+      const PAYMOB_SECRET_KEY = (env.PAYMOB_SECRET_KEY || "").trim();
+      const PAYMOB_PUBLIC_KEY = (env.PAYMOB_PUBLIC_KEY || "").trim();
       const SUPABASE_URL = (env.SUPABASE_URL || "").trim().replace(/\/$/, "");
-      const SUPABASE_SERVICE_ROLE_KEY = env.SUPABASE_SERVICE_ROLE_KEY;
+      const SUPABASE_SERVICE_ROLE_KEY = (env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
       if (!PAYMOB_SECRET_KEY || !PAYMOB_PUBLIC_KEY) {
         return new Response(JSON.stringify({
@@ -41,10 +41,11 @@ export default {
         const CARD_INTEGRATION_ID = 5790552;
         const WALLET_INTEGRATION_ID = 5783298;
 
+        // طلب إنشاء Intention بنظام Paymob المحدث
         const paymobIntentRes = await fetch("https://accept.paymob.com/v1/intention/", {
           method: "POST",
           headers: {
-            "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
+            "Authorization": `Secret ${PAYMOB_SECRET_KEY}`,
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
@@ -62,18 +63,19 @@ export default {
         });
 
         const contentType = paymobIntentRes.headers.get("content-type") || "";
+
         if (!contentType.includes("application/json")) {
           const rawText = await paymobIntentRes.text();
           return new Response(JSON.stringify({
             success: false,
-            message: `استجابة غير متوقعة من Paymob: ${rawText.substring(0, 100)}`
+            message: `استجابة سيرفر Paymob (${paymobIntentRes.status}): ${rawText.substring(0, 100)}`
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
         const intentData = await paymobIntentRes.json();
+        const clientSecret = intentData.client_secret || intentData.cs;
 
-        if (paymobIntentRes.ok && (intentData.client_secret || intentData.cs)) {
-          const clientSecret = intentData.client_secret || intentData.cs;
+        if (paymobIntentRes.ok && clientSecret) {
           const paymentUrl = `https://accept.paymob.com/unifiedcheckout/?publicKey=${PAYMOB_PUBLIC_KEY}&clientSecret=${clientSecret}`;
           
           return new Response(JSON.stringify({
