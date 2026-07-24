@@ -23,6 +23,7 @@ export default {
       const SUPABASE_URL = "https://lwffkkzdkvafyuwrcbzl.supabase.co";
       const SUPABASE_SERVICE_ROLE_KEY = (env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDM4NDk3NSwiZXhwIjoyMDk5OTYwOTc1fQ.PLACEHOLDER").replace(/\s+/g, "");
 
+      // الحصول على مفتاح Paymob وتأمين إزالة أي مسافات
       const PAYMOB_SECRET_KEY = (env.PAYMOB_SECRET_KEY || "").replace(/\s+/g, "");
       const PAYMOB_PUBLIC_KEY = (env.PAYMOB_PUBLIC_KEY || "").replace(/\s+/g, "");
 
@@ -114,7 +115,7 @@ export default {
 
         let authHeader = PAYMOB_SECRET_KEY.startsWith("Egy_sk_") 
           ? `Bearer ${PAYMOB_SECRET_KEY}` 
-          : `Secret ${PAYMOB_SECRET_KEY}`;
+          : `Token ${PAYMOB_SECRET_KEY}`;
 
         let paymobRes = await fetch("https://accept.paymob.com/v1/intention/", {
           method: "POST",
@@ -155,7 +156,7 @@ export default {
       }
 
       // ----------------------------------------------------
-      // 3. التحقق والتفعيل اليدوي وتصحيح الأخطاء (verify_payment)
+      // 3. التحقق والتفعيل اليدوي والحماية من التكرار (verify_payment)
       // ----------------------------------------------------
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
@@ -193,60 +194,43 @@ export default {
 
         let isSuccess = false;
         let amountCents = 0;
-        let debugLogs = {};
 
-        // محاولة 1: الاستعلام عبر Secret Key المباشر
-        let authHeader = PAYMOB_SECRET_KEY.startsWith("Egy_sk_") 
-          ? `Bearer ${PAYMOB_SECRET_KEY}` 
-          : `Secret ${PAYMOB_SECRET_KEY}`;
+        // 🔑 توليد Token رسمي ديناميكياً لتأكيد صلاحيات الاستعلام من Paymob
+        let authToken = "";
+        try {
+          const authRes = await fetch("https://accept.paymob.com/api/auth/tokens", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ api_key: PAYMOB_SECRET_KEY })
+          });
+          if (authRes.ok) {
+            const authData = await authRes.json();
+            authToken = authData.token;
+          }
+        } catch (e) {}
 
+        // تجهيز هيدر التوثيق المناسب
+        let verifyHeaders = {};
+        if (authToken) {
+          verifyHeaders = { "Authorization": `Bearer ${authToken}`, "Content-Type": "application/json" };
+        } else if (PAYMOB_SECRET_KEY.startsWith("Egy_sk_")) {
+          verifyHeaders = { "Authorization": `Bearer ${PAYMOB_SECRET_KEY}`, "Content-Type": "application/json" };
+        } else {
+          verifyHeaders = { "Authorization": `Token ${PAYMOB_SECRET_KEY}`, "Content-Type": "application/json" };
+        }
+
+        // الاستعلام عن العملية بداخل Paymob
         let verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
           method: "GET",
-          headers: {
-            "Authorization": authHeader,
-            "Content-Type": "application/json"
-          }
+          headers: verifyHeaders
         });
 
         let txData = {};
         try { txData = await verifyRes.json(); } catch (e) {}
-        debugLogs.attempt1_status = verifyRes.status;
-        debugLogs.attempt1_data = txData;
 
         if (verifyRes.ok && (txData.success === true || txData.is_success === true) && txData.pending === false) {
           isSuccess = true;
           amountCents = txData.amount_cents || 0;
-        } else {
-          // محاولة 2: توليد Auth Token جديد إذا فشلت المحاولة الأولى
-          try {
-            const authRes = await fetch("https://accept.paymob.com/api/auth/tokens", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ api_key: PAYMOB_SECRET_KEY })
-            });
-            if (authRes.ok) {
-              const authData = await authRes.json();
-              const token = authData.token;
-
-              let verifyRes2 = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
-                method: "GET",
-                headers: {
-                  "Authorization": `Bearer ${token}`,
-                  "Content-Type": "application/json"
-                }
-              });
-              let txData2 = await verifyRes2.json();
-              debugLogs.attempt2_status = verifyRes2.status;
-              debugLogs.attempt2_data = txData2;
-
-              if (verifyRes2.ok && (txData2.success === true || txData2.is_success === true) && txData2.pending === false) {
-                isSuccess = true;
-                amountCents = txData2.amount_cents || 0;
-              }
-            }
-          } catch(err) {
-            debugLogs.auth_token_error = err.message;
-          }
         }
 
         // تنفيذ التفعيل في Supabase إذا كانت العملية ناجحة
@@ -292,12 +276,10 @@ export default {
             }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
           }
         } else {
-          // إظهار سبب الرفض الدقيق القادم من Paymob
-          const detailedReason = debugLogs.attempt1_data?.message || debugLogs.attempt1_data?.detail || debugLogs.attempt2_data?.detail || "رقم المعاملة غير صالح أو المفتاح غير مطابق";
           return new Response(JSON.stringify({
             success: false,
-            message: `العملية لم تكتمل بنجاح (السبب: ${detailedReason})`,
-            debug: debugLogs
+            message: `العملية لم تكتمل بنجاح أو تعذر التحقق منها من بوابة Paymob.`,
+            paymob_error: txData
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
@@ -315,3 +297,4 @@ export default {
     }
   }
 };
+ 
