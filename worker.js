@@ -20,7 +20,6 @@ export default {
 
       const body = await request.json();
 
-      // البيانات الحقيقية لمشروع Supabase والمأخوذة من لوحة الأدمن
       const SUPABASE_URL = "https://lwffkkzdkvafyuwrcbzl.supabase.co";
       const SUPABASE_SERVICE_ROLE_KEY = (env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDM4NDk3NSwiZXhwIjoyMDk5OTYwOTc1fQ.PLACEHOLDER").replace(/\s+/g, "");
 
@@ -28,7 +27,7 @@ export default {
       const PAYMOB_PUBLIC_KEY = (env.PAYMOB_PUBLIC_KEY || "").replace(/\s+/g, "");
 
       // ----------------------------------------------------
-      // 1. تفعيل التجربة المجانية (activate_trial) - 48 ساعة
+      // 1. تفعيل التجربة المجانية مع فحص الاستخدام السابق
       // ----------------------------------------------------
       if (body.action === "activate_trial") {
         const deviceId = body.device_id;
@@ -39,11 +38,35 @@ export default {
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
+        // الخطوة أ: الاستعلام عن الجهاز بداخل جدول users
+        const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/users?device_id=eq.${encodeURIComponent(deviceId)}&select=*`, {
+          method: "GET",
+          headers: {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "Content-Type": "application/json"
+          }
+        });
+
+        if (checkRes.ok) {
+          const existingUsers = await checkRes.json();
+
+          // لو الجهاز مضاف قبل كده وله تاريخ تجربة سابق
+          if (existingUsers && existingUsers.length > 0 && existingUsers[0].trial_expires_at) {
+            return new Response(JSON.stringify({
+              success: false,
+              already_used: true,
+              message: "⚠️ لقد تم استخدام الفترة التجريبية لهذا الجهاز من قبل!",
+              trial_expires_at: existingUsers[0].trial_expires_at
+            }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          }
+        }
+
+        // الخطوة ب: لو الجهاز جديد كلياً، نفّذ تفعيل التجربة 48 ساعة
         const now = new Date();
         now.setHours(now.getHours() + 48);
         const trialExpiry = now.toISOString();
 
-        // الكتابة المباشرة في جدول users المخصص للأجهزة
         const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/users?on_conflict=device_id`;
 
         const supabaseRes = await fetch(supabaseEndpoint, {
@@ -83,7 +106,7 @@ export default {
       }
 
       // ----------------------------------------------------
-      // 2. إنشاء جلسة الدفع (create_payment_intent) - Paymob
+      // 2. إنشاء جلسة الدفع (create_payment_intent)
       // ----------------------------------------------------
       if (body.action === "create_payment_intent") {
         const planType = body.plan_type || "monthly";
@@ -177,9 +200,9 @@ export default {
           const amountCents = txData.amount_cents;
           const now = new Date();
           if (amountCents >= 200000) {
-            now.setFullYear(now.getFullYear() + 1); // سنوي
+            now.setFullYear(now.getFullYear() + 1);
           } else {
-            now.setMonth(now.getMonth() + 1); // شهري
+            now.setMonth(now.getMonth() + 1);
           }
 
           const subExpiry = now.toISOString();
