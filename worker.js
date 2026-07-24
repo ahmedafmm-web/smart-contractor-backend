@@ -39,7 +39,7 @@ export default {
 
         const expiryDate = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
-        // إرسال البيانات كـ Array لضمان توافق Supabase UPSERT
+        // إرسال البيانات داخل Array لتوافق Supabase UPSERT
         const supabaseRes = await fetch(`${SUPABASE_URL}/rest/v1/subscriptions`, {
           method: "POST",
           headers: {
@@ -94,10 +94,17 @@ export default {
         const CARD_INTEGRATION_ID = 5790552;
         const WALLET_INTEGRATION_ID = 5783298;
 
-        const paymobIntentRes = await fetch("https://accept.paymob.com/v1/intention/", {
+        // تحديد نمط التوثيق الذكي بناءً على نوع المفتاح
+        let authHeader = `Secret ${PAYMOB_SECRET_KEY}`;
+        if (PAYMOB_SECRET_KEY.startsWith("Egy_sk_")) {
+          authHeader = `Bearer ${PAYMOB_SECRET_KEY}`;
+        }
+
+        // المحاولة الأولى للتوثيق
+        let paymobIntentRes = await fetch("https://accept.paymob.com/v1/intention/", {
           method: "POST",
           headers: {
-            "Authorization": `Secret ${PAYMOB_SECRET_KEY}`,
+            "Authorization": authHeader,
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
@@ -114,7 +121,31 @@ export default {
           })
         });
 
+        // محاولة احتياطية بنظام Token في حال وجود قيود على الحساب
+        if (paymobIntentRes.status === 401 || paymobIntentRes.status === 403) {
+          paymobIntentRes = await fetch("https://accept.paymob.com/v1/intention/", {
+            method: "POST",
+            headers: {
+              "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              amount: amountCents,
+              currency: "EGP",
+              payment_methods: [CARD_INTEGRATION_ID, WALLET_INTEGRATION_ID],
+              billing_data: {
+                first_name: "Smart",
+                last_name: "Contractor",
+                email: "client@smartcontractor.com",
+                phone_number: "+201000000000"
+              },
+              special_reference: `SC_${deviceId}_${Date.now()}`
+            })
+          });
+        }
+
         const contentType = paymobIntentRes.headers.get("content-type") || "";
+
         if (!contentType.includes("application/json")) {
           const rawText = await paymobIntentRes.text();
           return new Response(JSON.stringify({
