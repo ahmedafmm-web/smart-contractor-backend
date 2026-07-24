@@ -38,7 +38,6 @@ export default {
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
-        // الاستعلام عن الجهاز بداخل جدول users
         const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/users?device_id=eq.${encodeURIComponent(deviceId)}&select=*`, {
           method: "GET",
           headers: {
@@ -50,7 +49,6 @@ export default {
 
         if (checkRes.ok) {
           const existingUsers = await checkRes.json();
-
           if (existingUsers && existingUsers.length > 0 && existingUsers[0].trial_expires_at) {
             return new Response(JSON.stringify({
               success: false,
@@ -61,7 +59,6 @@ export default {
           }
         }
 
-        // تفعيل التجربة المجانية لمدة 48 ساعة
         const now = new Date();
         now.setHours(now.getHours() + 48);
         const trialExpiry = now.toISOString();
@@ -158,7 +155,7 @@ export default {
       }
 
       // ----------------------------------------------------
-      // 3. التحقق والتفعيل اليدوي والحماية من التكرار (verify_payment)
+      // 3. التحقق والتفعيل اليدوي وتصحيح الأخطاء (verify_payment)
       // ----------------------------------------------------
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
@@ -172,78 +169,87 @@ export default {
 
         const cleanTxId = String(transaction_id).replace(/\D/g, '').trim();
 
-        // 🛡️ خطوة أمنية: التأكد أولاً من أن الريسيت لم يتم استخدامه لتفعيل جهاز آخر في Supabase
-        const checkTxRes = await fetch(`${SUPABASE_URL}/rest/v1/users?last_transaction_id=eq.${encodeURIComponent(cleanTxId)}&select=device_id`, {
+        // 🛡️ فحص عدم تكرار الريسيت بداخل Supabase
+        try {
+          const checkTxRes = await fetch(`${SUPABASE_URL}/rest/v1/users?last_transaction_id=eq.${encodeURIComponent(cleanTxId)}&select=device_id`, {
+            method: "GET",
+            headers: {
+              "apikey": SUPABASE_SERVICE_ROLE_KEY,
+              "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+              "Content-Type": "application/json"
+            }
+          });
+
+          if (checkTxRes.ok) {
+            const usedTxUsers = await checkTxRes.json();
+            if (usedTxUsers && usedTxUsers.length > 0 && usedTxUsers[0].device_id !== device_id) {
+              return new Response(JSON.stringify({
+                success: false,
+                message: "⚠️ رقم العملية هذا تم استخدامه بالفعل لتفعيل جهاز آخر!"
+              }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+            }
+          }
+        } catch (e) {}
+
+        let isSuccess = false;
+        let amountCents = 0;
+        let debugLogs = {};
+
+        // محاولة 1: الاستعلام عبر Secret Key المباشر
+        let authHeader = PAYMOB_SECRET_KEY.startsWith("Egy_sk_") 
+          ? `Bearer ${PAYMOB_SECRET_KEY}` 
+          : `Secret ${PAYMOB_SECRET_KEY}`;
+
+        let verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
           method: "GET",
           headers: {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "Authorization": authHeader,
             "Content-Type": "application/json"
           }
         });
 
-        if (checkTxRes.ok) {
-          const usedTxUsers = await checkTxRes.json();
-          // لو الريسيت مستخدم مع جهاز مختلف
-          if (usedTxUsers && usedTxUsers.length > 0 && usedTxUsers[0].device_id !== device_id) {
-            return new Response(JSON.stringify({
-              success: false,
-              message: "⚠️ رقم العملية هذا تم استخدامه بالفعل لتفعيل جهاز آخر!"
-            }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-          }
-        }
-
-        // توليد Auth Token لـ Paymob
-        let authToken = "";
-        try {
-          const authRes = await fetch("https://accept.paymob.com/api/auth/tokens", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ api_key: PAYMOB_SECRET_KEY })
-          });
-          if (authRes.ok) {
-            const authData = await authRes.json();
-            authToken = authData.token;
-          }
-        } catch (e) {}
-
-        const headersList = {
-          "Authorization": authToken ? `Bearer ${authToken}` : `Bearer ${PAYMOB_SECRET_KEY}`,
-          "Content-Type": "application/json"
-        };
-
-        let isSuccess = false;
-        let amountCents = 0;
-
-        // فحص كـ Transaction ID المباشر
-        let verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
-          method: "GET",
-          headers: headersList
-        });
-
         let txData = {};
         try { txData = await verifyRes.json(); } catch (e) {}
+        debugLogs.attempt1_status = verifyRes.status;
+        debugLogs.attempt1_data = txData;
 
         if (verifyRes.ok && (txData.success === true || txData.is_success === true) && txData.pending === false) {
           isSuccess = true;
           amountCents = txData.amount_cents || 0;
         } else {
-          // فحص كـ Order ID لو أُدخل بالخطأ
-          let orderRes = await fetch(`https://accept.paymob.com/api/ecommerce/orders/${cleanTxId}`, {
-            method: "GET",
-            headers: headersList
-          });
+          // محاولة 2: توليد Auth Token جديد إذا فشلت المحاولة الأولى
+          try {
+            const authRes = await fetch("https://accept.paymob.com/api/auth/tokens", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ api_key: PAYMOB_SECRET_KEY })
+            });
+            if (authRes.ok) {
+              const authData = await authRes.json();
+              const token = authData.token;
 
-          let orderData = {};
-          try { orderData = await orderRes.json(); } catch(e) {}
+              let verifyRes2 = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
+                method: "GET",
+                headers: {
+                  "Authorization": `Bearer ${token}`,
+                  "Content-Type": "application/json"
+                }
+              });
+              let txData2 = await verifyRes2.json();
+              debugLogs.attempt2_status = verifyRes2.status;
+              debugLogs.attempt2_data = txData2;
 
-          if (orderRes.ok && orderData.paid_at && orderData.is_payment_locked === true) {
-            isSuccess = true;
-            amountCents = orderData.amount_cents || 0;
+              if (verifyRes2.ok && (txData2.success === true || txData2.is_success === true) && txData2.pending === false) {
+                isSuccess = true;
+                amountCents = txData2.amount_cents || 0;
+              }
+            }
+          } catch(err) {
+            debugLogs.auth_token_error = err.message;
           }
         }
 
-        // تنفيذ التفعيل وتخزين رقم العملية للوقاية من التكرار
+        // تنفيذ التفعيل في Supabase إذا كانت العملية ناجحة
         if (isSuccess) {
           const now = new Date();
           if (amountCents >= 200000) {
@@ -268,7 +274,7 @@ export default {
               is_subscribed: true,
               subscription_expires_at: subExpiry,
               trial_expires_at: null,
-              last_transaction_id: cleanTxId // تخزين رقم المعاملة لمنع إعادة استخدامه
+              last_transaction_id: cleanTxId
             }])
           });
 
@@ -286,10 +292,12 @@ export default {
             }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
           }
         } else {
+          // إظهار سبب الرفض الدقيق القادم من Paymob
+          const detailedReason = debugLogs.attempt1_data?.message || debugLogs.attempt1_data?.detail || debugLogs.attempt2_data?.detail || "رقم المعاملة غير صالح أو المفتاح غير مطابق";
           return new Response(JSON.stringify({
             success: false,
-            message: "العملية لم تكتمل بنجاح أو رقم الريسيت غير صالح.",
-            debug_paymob: txData
+            message: `العملية لم تكتمل بنجاح (السبب: ${detailedReason})`,
+            debug: debugLogs
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
