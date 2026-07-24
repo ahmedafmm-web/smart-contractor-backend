@@ -20,7 +20,6 @@ export default {
 
       const body = await request.json();
 
-      // ثوابت Supabase المباشرة والمضمونة
       const SUPABASE_URL = "https://nnglxiwqwwjcsejmtvxb.supabase.co";
       const SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5uZ2x4aXdxd3dqY3Nlam10dnhiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTAzMTA5NywiZXhwIjoyMDk2NjA3MDk3fQ.83qD96bOyk7BYY6WZGpIBKg3V84qsBACfhfFyjQ1HyE";
 
@@ -41,41 +40,35 @@ export default {
 
         const expiryDate = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
-        // الحل الجذري: تحديد on_conflict=device_id بداخل الـ URL لضمان نجاح الـ UPSERT وسماح Supabase بالتمرير
-        const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
-
-        const supabaseRes = await fetch(supabaseEndpoint, {
+        // إرسال طلب UPSERT مباشر لجدول subscriptions
+        const supabaseRes = await fetch(`${SUPABASE_URL}/rest/v1/subscriptions`, {
           method: "POST",
           headers: {
             "apikey": SUPABASE_SERVICE_ROLE_KEY,
             "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
             "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates,return=representation"
+            "Prefer": "resolution=merge-duplicates,return=headers-only"
           },
-          body: JSON.stringify([{
+          body: JSON.stringify({
             device_id: deviceId,
             status: "trial",
             expires_at: expiryDate,
             updated_at: new Date().toISOString()
-          }])
+          })
         });
 
-        const resText = await supabaseRes.text();
-        let parsedData;
-        try { parsedData = JSON.parse(resText); } catch (e) { parsedData = resText; }
-
-        if (supabaseRes.ok) {
+        if (supabaseRes.ok || supabaseRes.status === 201 || supabaseRes.status === 204) {
           return new Response(JSON.stringify({
             success: true,
             message: `✅ تم تفعيل التجربة المجانية بنجاح لمدة 48 ساعة للجهاز: ${deviceId}`,
-            trial_expires_at: expiryDate,
-            data: parsedData
+            trial_expires_at: expiryDate
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         } else {
+          const errText = await supabaseRes.text();
           return new Response(JSON.stringify({
             success: false,
             message: `فشل الكتابة في Supabase (كود ${supabaseRes.status})`,
-            details: parsedData
+            details: errText
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
@@ -178,26 +171,24 @@ export default {
           const expiryDate = new Date();
           expiryDate.setDate(expiryDate.getDate() + daysToAdd);
 
-          const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
-
-          const supabaseRes = await fetch(supabaseEndpoint, {
+          const supabaseRes = await fetch(`${SUPABASE_URL}/rest/v1/subscriptions`, {
             method: "POST",
             headers: {
               "apikey": SUPABASE_SERVICE_ROLE_KEY,
               "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
               "Content-Type": "application/json",
-              "Prefer": "resolution=merge-duplicates"
+              "Prefer": "resolution=merge-duplicates,return=headers-only"
             },
-            body: JSON.stringify([{
+            body: JSON.stringify({
               device_id: device_id,
               status: "active",
               expires_at: expiryDate.toISOString(),
               last_transaction_id: String(transaction_id),
               updated_at: new Date().toISOString()
-            }])
+            })
           });
 
-          if (supabaseRes.ok) {
+          if (supabaseRes.ok || supabaseRes.status === 201 || supabaseRes.status === 204) {
             return new Response(JSON.stringify({
               success: true,
               message: `تم التفعيل بنجاح! ينتهي اشتراكك في: ${expiryDate.toLocaleDateString('ar-EG')}`
