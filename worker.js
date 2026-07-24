@@ -20,14 +20,15 @@ export default {
 
       const body = await request.json();
 
-      const SUPABASE_URL = "https://nnglxiwqwwjcsejmtvxb.supabase.co";
-      const SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5uZ2x4aXdxd3dqY3Nlam10dnhiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTAzMTA5NywiZXhwIjoyMDk2NjA3MDk3fQ.83qD96bOyk7BYY6WZGpIBKg3V84qsBACfhfFyjQ1HyE";
+      // البيانات الحقيقية لمشروع Supabase والمأخوذة من لوحة الأدمن
+      const SUPABASE_URL = "https://lwffkkzdkvafyuwrcbzl.supabase.co";
+      const SUPABASE_SERVICE_ROLE_KEY = (env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDM4NDk3NSwiZXhwIjoyMDk5OTYwOTc1fQ.PLACEHOLDER").replace(/\s+/g, "");
 
       const PAYMOB_SECRET_KEY = (env.PAYMOB_SECRET_KEY || "").replace(/\s+/g, "");
       const PAYMOB_PUBLIC_KEY = (env.PAYMOB_PUBLIC_KEY || "").replace(/\s+/g, "");
 
       // ----------------------------------------------------
-      // 1. تفعيل التجربة المجانية (activate_trial)
+      // 1. تفعيل التجربة المجانية (activate_trial) - 48 ساعة
       // ----------------------------------------------------
       if (body.action === "activate_trial") {
         const deviceId = body.device_id;
@@ -38,43 +39,51 @@ export default {
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
-        const expiryDate = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+        const now = new Date();
+        now.setHours(now.getHours() + 48);
+        const trialExpiry = now.toISOString();
 
-        // إرسال طلب UPSERT مباشر لجدول subscriptions
-        const supabaseRes = await fetch(`${SUPABASE_URL}/rest/v1/subscriptions`, {
+        // الكتابة المباشرة في جدول users المخصص للأجهزة
+        const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/users?on_conflict=device_id`;
+
+        const supabaseRes = await fetch(supabaseEndpoint, {
           method: "POST",
           headers: {
             "apikey": SUPABASE_SERVICE_ROLE_KEY,
             "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
             "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates,return=headers-only"
+            "Prefer": "resolution=merge-duplicates,return=representation"
           },
-          body: JSON.stringify({
+          body: JSON.stringify([{
             device_id: deviceId,
-            status: "trial",
-            expires_at: expiryDate,
-            updated_at: new Date().toISOString()
-          })
+            is_subscribed: false,
+            subscription_expires_at: null,
+            trial_expires_at: trialExpiry
+          }])
         });
 
-        if (supabaseRes.ok || supabaseRes.status === 201 || supabaseRes.status === 204) {
+        const resText = await supabaseRes.text();
+        let parsedData;
+        try { parsedData = JSON.parse(resText); } catch (e) { parsedData = resText; }
+
+        if (supabaseRes.ok) {
           return new Response(JSON.stringify({
             success: true,
             message: `✅ تم تفعيل التجربة المجانية بنجاح لمدة 48 ساعة للجهاز: ${deviceId}`,
-            trial_expires_at: expiryDate
+            trial_expires_at: trialExpiry,
+            data: parsedData
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         } else {
-          const errText = await supabaseRes.text();
           return new Response(JSON.stringify({
             success: false,
             message: `فشل الكتابة في Supabase (كود ${supabaseRes.status})`,
-            details: errText
+            details: parsedData
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
 
       // ----------------------------------------------------
-      // 2. إنشاء جلسة الدفع (create_payment_intent)
+      // 2. إنشاء جلسة الدفع (create_payment_intent) - Paymob
       // ----------------------------------------------------
       if (body.action === "create_payment_intent") {
         const planType = body.plan_type || "monthly";
@@ -166,32 +175,36 @@ export default {
 
         if (verifyRes.ok && txData.success && txData.pending === false) {
           const amountCents = txData.amount_cents;
-          let daysToAdd = (amountCents >= 200000) ? 365 : 30;
+          const now = new Date();
+          if (amountCents >= 200000) {
+            now.setFullYear(now.getFullYear() + 1); // سنوي
+          } else {
+            now.setMonth(now.getMonth() + 1); // شهري
+          }
 
-          const expiryDate = new Date();
-          expiryDate.setDate(expiryDate.getDate() + daysToAdd);
+          const subExpiry = now.toISOString();
+          const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/users?on_conflict=device_id`;
 
-          const supabaseRes = await fetch(`${SUPABASE_URL}/rest/v1/subscriptions`, {
+          const supabaseRes = await fetch(supabaseEndpoint, {
             method: "POST",
             headers: {
               "apikey": SUPABASE_SERVICE_ROLE_KEY,
               "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
               "Content-Type": "application/json",
-              "Prefer": "resolution=merge-duplicates,return=headers-only"
+              "Prefer": "resolution=merge-duplicates,return=representation"
             },
-            body: JSON.stringify({
+            body: JSON.stringify([{
               device_id: device_id,
-              status: "active",
-              expires_at: expiryDate.toISOString(),
-              last_transaction_id: String(transaction_id),
-              updated_at: new Date().toISOString()
-            })
+              is_subscribed: true,
+              subscription_expires_at: subExpiry,
+              trial_expires_at: null
+            }])
           });
 
-          if (supabaseRes.ok || supabaseRes.status === 201 || supabaseRes.status === 204) {
+          if (supabaseRes.ok) {
             return new Response(JSON.stringify({
               success: true,
-              message: `تم التفعيل بنجاح! ينتهي اشتراكك في: ${expiryDate.toLocaleDateString('ar-EG')}`
+              message: `تم التفعيل بنجاح! ينتهي اشتراكك في: ${now.toLocaleDateString('ar-EG')}`
             }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
           } else {
             const errBody = await supabaseRes.text();
