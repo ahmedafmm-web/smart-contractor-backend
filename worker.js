@@ -155,7 +155,7 @@ export default {
       }
 
       // ----------------------------------------------------
-      // 3. التحقق والتفعيل اليدوي المزدوج (verify_payment)
+      // 3. التحقق والتفعيل اليدوي المباشر مع تفاصيل الرد (verify_payment)
       // ----------------------------------------------------
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
@@ -210,7 +210,7 @@ export default {
 
         const authHeader = authToken ? `Bearer ${authToken}` : (PAYMOB_SECRET_KEY.startsWith("Egy_sk_") ? `Bearer ${PAYMOB_SECRET_KEY}` : `Token ${PAYMOB_SECRET_KEY}`);
 
-        // 1️⃣ المحاولة الأولى: فحص Transaction API المباشر
+        // فحص Transaction API
         let verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
           method: "GET",
           headers: { "Authorization": authHeader, "Content-Type": "application/json" }
@@ -222,23 +222,9 @@ export default {
         if (verifyRes.ok && (txData.success === true || txData.is_success === true) && txData.pending === false) {
           isSuccess = true;
           amountCents = txData.amount_cents || 0;
-        } else {
-          // 2️⃣ المحاولة الثانية: فحص Order ID
-          let orderRes = await fetch(`https://accept.paymob.com/api/ecommerce/orders/${cleanTxId}`, {
-            method: "GET",
-            headers: { "Authorization": authHeader, "Content-Type": "application/json" }
-          });
-
-          let orderData = {};
-          try { orderData = await orderRes.json(); } catch(e) {}
-
-          if (orderRes.ok && orderData.paid_at) {
-            isSuccess = true;
-            amountCents = orderData.amount_cents || 0;
-          }
         }
 
-        // 3️⃣ الحفظ والتفعيل بداخل Supabase
+        // الحفظ والتفعيل بداخل Supabase
         if (isSuccess) {
           const now = new Date();
           if (amountCents >= 200000) {
@@ -281,10 +267,10 @@ export default {
             }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
           }
         } else {
+          // طباعة رد Paymob الحقيقي مباشرة في نص الرسالة ليظهر على الشاشة!
           return new Response(JSON.stringify({
             success: false,
-            message: "العملية لم تكتمل بنجاح أو تعذر العثور على الإيصال في Paymob.",
-            raw_response: txData
+            message: `فشل التحقق من Paymob (Status: ${verifyRes.status}) - الرد: ${JSON.stringify(txData)}`
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
