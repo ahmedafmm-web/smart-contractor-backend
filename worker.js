@@ -38,7 +38,7 @@ export default {
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
-        // الخطوة أ: الاستعلام عن الجهاز بداخل جدول users
+        // الاستعلام عن الجهاز بداخل جدول users
         const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/users?device_id=eq.${encodeURIComponent(deviceId)}&select=*`, {
           method: "GET",
           headers: {
@@ -51,7 +51,6 @@ export default {
         if (checkRes.ok) {
           const existingUsers = await checkRes.json();
 
-          // لو الجهاز مضاف قبل كده وله تاريخ تجربة سابق
           if (existingUsers && existingUsers.length > 0 && existingUsers[0].trial_expires_at) {
             return new Response(JSON.stringify({
               success: false,
@@ -62,7 +61,7 @@ export default {
           }
         }
 
-        // الخطوة ب: لو الجهاز جديد كلياً، نفّذ تفعيل التجربة 48 ساعة
+        // تفعيل التجربة المجانية لمدة 48 ساعة
         const now = new Date();
         now.setHours(now.getHours() + 48);
         const trialExpiry = now.toISOString();
@@ -159,7 +158,7 @@ export default {
       }
 
       // ----------------------------------------------------
-      // 3. التحقق والتفعيل اليدوي (verify_payment)
+      // 3. التحقق والتفعيل اليدوي والحماية من التكرار (verify_payment)
       // ----------------------------------------------------
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
@@ -171,6 +170,30 @@ export default {
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
+        const cleanTxId = String(transaction_id).replace(/\D/g, '').trim();
+
+        // 🛡️ خطوة أمنية: التأكد أولاً من أن الريسيت لم يتم استخدامه لتفعيل جهاز آخر في Supabase
+        const checkTxRes = await fetch(`${SUPABASE_URL}/rest/v1/users?last_transaction_id=eq.${encodeURIComponent(cleanTxId)}&select=device_id`, {
+          method: "GET",
+          headers: {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "Content-Type": "application/json"
+          }
+        });
+
+        if (checkTxRes.ok) {
+          const usedTxUsers = await checkTxRes.json();
+          // لو الريسيت مستخدم مع جهاز مختلف
+          if (usedTxUsers && usedTxUsers.length > 0 && usedTxUsers[0].device_id !== device_id) {
+            return new Response(JSON.stringify({
+              success: false,
+              message: "⚠️ رقم العملية هذا تم استخدامه بالفعل لتفعيل جهاز آخر!"
+            }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          }
+        }
+
+        // توليد Auth Token لـ Paymob
         let authToken = "";
         try {
           const authRes = await fetch("https://accept.paymob.com/api/auth/tokens", {
@@ -184,20 +207,44 @@ export default {
           }
         } catch (e) {}
 
-        const verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${transaction_id}`, {
+        const headersList = {
+          "Authorization": authToken ? `Bearer ${authToken}` : `Bearer ${PAYMOB_SECRET_KEY}`,
+          "Content-Type": "application/json"
+        };
+
+        let isSuccess = false;
+        let amountCents = 0;
+
+        // فحص كـ Transaction ID المباشر
+        let verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
           method: "GET",
-          headers: {
-            "Authorization": authToken ? `Bearer ${authToken}` : `Token ${PAYMOB_SECRET_KEY}`,
-            "Content-Type": "application/json"
-          }
+          headers: headersList
         });
 
-        const rawTxText = await verifyRes.text();
-        let txData;
-        try { txData = JSON.parse(rawTxText); } catch (e) { txData = rawTxText; }
+        let txData = {};
+        try { txData = await verifyRes.json(); } catch (e) {}
 
-        if (verifyRes.ok && txData.success && txData.pending === false) {
-          const amountCents = txData.amount_cents;
+        if (verifyRes.ok && (txData.success === true || txData.is_success === true) && txData.pending === false) {
+          isSuccess = true;
+          amountCents = txData.amount_cents || 0;
+        } else {
+          // فحص كـ Order ID لو أُدخل بالخطأ
+          let orderRes = await fetch(`https://accept.paymob.com/api/ecommerce/orders/${cleanTxId}`, {
+            method: "GET",
+            headers: headersList
+          });
+
+          let orderData = {};
+          try { orderData = await orderRes.json(); } catch(e) {}
+
+          if (orderRes.ok && orderData.paid_at && orderData.is_payment_locked === true) {
+            isSuccess = true;
+            amountCents = orderData.amount_cents || 0;
+          }
+        }
+
+        // تنفيذ التفعيل وتخزين رقم العملية للوقاية من التكرار
+        if (isSuccess) {
           const now = new Date();
           if (amountCents >= 200000) {
             now.setFullYear(now.getFullYear() + 1);
@@ -220,14 +267,16 @@ export default {
               device_id: device_id,
               is_subscribed: true,
               subscription_expires_at: subExpiry,
-              trial_expires_at: null
+              trial_expires_at: null,
+              last_transaction_id: cleanTxId // تخزين رقم المعاملة لمنع إعادة استخدامه
             }])
           });
 
           if (supabaseRes.ok) {
             return new Response(JSON.stringify({
               success: true,
-              message: `تم التفعيل بنجاح! ينتهي اشتراكك في: ${now.toLocaleDateString('ar-EG')}`
+              message: `✅ تم التفعيل بنجاح! ينتهي اشتراكك في: ${now.toLocaleDateString('ar-EG')}`,
+              expires_at: subExpiry
             }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
           } else {
             const errBody = await supabaseRes.text();
@@ -239,7 +288,8 @@ export default {
         } else {
           return new Response(JSON.stringify({
             success: false,
-            message: "العملية لم تكتمل بنجاح أو غير صالحة."
+            message: "العملية لم تكتمل بنجاح أو رقم الريسيت غير صالح.",
+            debug_paymob: txData
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
