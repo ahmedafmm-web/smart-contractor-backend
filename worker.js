@@ -1,157 +1,5 @@
-export default {
-  async fetch(request, env, ctx) {
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
-    };
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
-    }
-
-    try {
-      if (request.method !== "POST") {
-        return new Response(JSON.stringify({ success: false, message: "Method Not Allowed" }), {
-          status: 405,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
-
-      const body = await request.json();
-
-      const SUPABASE_URL = "https://lwffkkzdkvafyuwrcbzl.supabase.co";
-      const SUPABASE_SERVICE_ROLE_KEY = (env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDM4NDk3NSwiZXhwIjoyMDk5OTYwOTc1fQ.PLACEHOLDER").replace(/\s+/g, "");
-
-      const PAYMOB_SECRET_KEY = (env.PAYMOB_SECRET_KEY || "").replace(/\s+/g, "");
-      const PAYMOB_PUBLIC_KEY = (env.PAYMOB_PUBLIC_KEY || "").replace(/\s+/g, "");
-
       // ----------------------------------------------------
-      // 1. تفعيل التجربة المجانية
-      // ----------------------------------------------------
-      if (body.action === "activate_trial") {
-        const deviceId = body.device_id;
-        if (!deviceId) {
-          return new Response(JSON.stringify({
-            success: false,
-            message: "يرجى إدخال كود الجهاز لتفعيل التجربة."
-          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-
-        const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/users?device_id=eq.${encodeURIComponent(deviceId)}&select=*`, {
-          method: "GET",
-          headers: {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-            "Content-Type": "application/json"
-          }
-        });
-
-        if (checkRes.ok) {
-          const existingUsers = await checkRes.json();
-          if (existingUsers && existingUsers.length > 0 && existingUsers[0].trial_expires_at) {
-            return new Response(JSON.stringify({
-              success: false,
-              already_used: true,
-              message: "⚠️ لقد تم استخدام الفترة التجريبية لهذا الجهاز من قبل!",
-              trial_expires_at: existingUsers[0].trial_expires_at
-            }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-          }
-        }
-
-        const now = new Date();
-        now.setHours(now.getHours() + 48);
-        const trialExpiry = now.toISOString();
-
-        const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/users?on_conflict=device_id`;
-
-        const supabaseRes = await fetch(supabaseEndpoint, {
-          method: "POST",
-          headers: {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates,return=representation"
-          },
-          body: JSON.stringify([{
-            device_id: deviceId,
-            is_subscribed: false,
-            subscription_expires_at: null,
-            trial_expires_at: trialExpiry
-          }])
-        });
-
-        const resText = await supabaseRes.text();
-        let parsedData;
-        try { parsedData = JSON.parse(resText); } catch (e) { parsedData = resText; }
-
-        if (supabaseRes.ok) {
-          return new Response(JSON.stringify({
-            success: true,
-            message: `✅ تم تفعيل التجربة المجانية بنجاح لمدة 48 ساعة للجهاز: ${deviceId}`,
-            trial_expires_at: trialExpiry,
-            data: parsedData
-          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        } else {
-          return new Response(JSON.stringify({
-            success: false,
-            message: `فشل الكتابة في Supabase (كود ${supabaseRes.status})`,
-            details: parsedData
-          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-      }
-
-      // ----------------------------------------------------
-      // 2. إنشاء جلسة الدفع (create_payment_intent)
-      // ----------------------------------------------------
-      if (body.action === "create_payment_intent") {
-        const planType = body.plan_type || "monthly";
-        const deviceId = body.device_id || "UNKNOWN";
-        const amountCents = (planType === "yearly") ? 200000 : 25000;
-
-        const CARD_INTEGRATION_ID = 5790552;
-        const WALLET_INTEGRATION_ID = 5783298;
-
-        let paymobRes = await fetch("https://accept.paymob.com/v1/intention/", {
-          method: "POST",
-          headers: {
-            "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            amount: amountCents,
-            currency: "EGP",
-            payment_methods: [CARD_INTEGRATION_ID, WALLET_INTEGRATION_ID],
-            billing_data: {
-              first_name: "Smart",
-              last_name: "Contractor",
-              email: "client@smartcontractor.com",
-              phone_number: "+201000000000"
-            },
-            special_reference: `SC_${deviceId}_${Date.now()}`
-          })
-        });
-
-        const rawText = await paymobRes.text();
-        let intentData;
-        try { intentData = JSON.parse(rawText); } catch (e) { intentData = rawText; }
-
-        if (paymobRes.ok && intentData.client_secret) {
-          const paymentUrl = `https://accept.paymob.com/unifiedcheckout/?publicKey=${PAYMOB_PUBLIC_KEY}&clientSecret=${intentData.client_secret}`;
-          return new Response(JSON.stringify({
-            success: true,
-            payment_url: paymentUrl
-          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        } else {
-          return new Response(JSON.stringify({
-            success: false,
-            message: `رفض Paymob: ${JSON.stringify(intentData)}`
-          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-      }
-
-      // ----------------------------------------------------
-      // 3. التحقق والتفعيل المباشر المتوافق مع Intention API
+      // 3. التحقق والتفعيل المباشر مع طباعة التشخيص الكامل
       // ----------------------------------------------------
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
@@ -189,48 +37,67 @@ export default {
 
         let isSuccess = false;
         let amountCents = 0;
-        let txData = {};
-        let verifyRes;
+        let logAttempt1 = {}, logAttempt2 = {}, logAttempt3 = {};
 
-        // 1️⃣ المسار الأول: فحص Intention API المخصص لمفاتيح egy_sk_
+        // 1️⃣ فحص Acceptance Transaction API مباشرة
         try {
-          verifyRes = await fetch(`https://accept.paymob.com/v1/intention/${cleanTxId}/`, {
+          const res1 = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
             method: "GET",
             headers: {
               "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
               "Content-Type": "application/json"
             }
           });
-          if (verifyRes.ok) {
-            txData = await verifyRes.json();
-            if (txData.status === "SUCCESS" || txData.status === "COMPLETED" || txData.is_paid === true) {
-              isSuccess = true;
-              amountCents = txData.amount || txData.amount_cents || 0;
-            }
-          }
-        } catch(e) {}
+          const data1 = await res1.json();
+          logAttempt1 = { status: res1.status, response: data1 };
 
-        // 2️⃣ المسار الثاني: فحص Transaction API التابع للمفاتيح المباشرة
+          if (res1.ok && (data1.success === true || data1.is_success === true) && data1.pending === false) {
+            isSuccess = true;
+            amountCents = data1.amount_cents || 0;
+          }
+        } catch(e) { logAttempt1 = { error: e.message }; }
+
+        // 2️⃣ فحص E-Commerce Order API
         if (!isSuccess) {
           try {
-            verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
+            const res2 = await fetch(`https://accept.paymob.com/api/ecommerce/orders/${cleanTxId}`, {
               method: "GET",
               headers: {
-                "Authorization": `Secret ${PAYMOB_SECRET_KEY}`,
+                "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
                 "Content-Type": "application/json"
               }
             });
-            if (verifyRes.ok) {
-              txData = await verifyRes.json();
-              if ((txData.success === true || txData.is_success === true) && txData.pending === false) {
-                isSuccess = true;
-                amountCents = txData.amount_cents || 0;
-              }
+            const data2 = await res2.json();
+            logAttempt2 = { status: res2.status, response: data2 };
+
+            if (res2.ok && (data2.paid_at || data2.is_paid === true)) {
+              isSuccess = true;
+              amountCents = data2.amount_cents || 0;
             }
-          } catch(e) {}
+          } catch(e) { logAttempt2 = { error: e.message }; }
         }
 
-        // 3️⃣ تنفيذ التفعيل في Supabase
+        // 3️⃣ فحص Intention API
+        if (!isSuccess) {
+          try {
+            const res3 = await fetch(`https://accept.paymob.com/v1/intention/${cleanTxId}/`, {
+              method: "GET",
+              headers: {
+                "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
+                "Content-Type": "application/json"
+              }
+            });
+            const data3 = await res3.json();
+            logAttempt3 = { status: res3.status, response: data3 };
+
+            if (res3.ok && (data3.status === "SUCCESS" || data3.status === "COMPLETED" || data3.is_paid === true)) {
+              isSuccess = true;
+              amountCents = data3.amount || data3.amount_cents || 0;
+            }
+          } catch(e) { logAttempt3 = { error: e.message }; }
+        }
+
+        // تنفيذ التفعيل في Supabase
         if (isSuccess) {
           const now = new Date();
           if (amountCents >= 200000) {
@@ -275,22 +142,7 @@ export default {
         } else {
           return new Response(JSON.stringify({
             success: false,
-            message: `لم يتم العثور على معاملة مدفوعة بالرقم المرفق في حساب Paymob الخاص بك.`,
-            debug: txData
+            message: `تشخيص Paymob على الرقم (${cleanTxId}): [Tx: Status ${logAttempt1.status}] | [Order: Status ${logAttempt2.status}] | [Intention: Status ${logAttempt3.status}] - الرد النهائي: ${JSON.stringify(logAttempt1.response || logAttempt3.response || {})}`
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
-
-      return new Response(JSON.stringify({ success: false, message: "Invalid Action" }), {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-
-    } catch (err) {
-      return new Response(JSON.stringify({
-        success: false,
-        message: `خطأ داخل السيرفر: ${err.message}`
-      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-  }
-};
