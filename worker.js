@@ -18,19 +18,11 @@ export default {
         });
       }
 
-      let body = {};
-      try {
-        body = await request.json();
-      } catch (e) {
-        return new Response(JSON.stringify({ success: false, message: "بيانات الطلب غير صالحة" }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
+      const body = await request.json();
 
-      // 1. تثبيت رابط مشروعك ومفتاح الخدمة بشكل مباشر لمنع أي مشاكل DNS/1016/530
+      // ثوابت Supabase المباشرة والمضمونة
       const SUPABASE_URL = "https://nnglxiwqwwjcsejmtvxb.supabase.co";
-      const SUPABASE_SERVICE_ROLE_KEY = (env.SUPABASE_SERVICE_ROLE_KEY || "EyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5uZ2x4aXdxd3dqY3Nlam10dnhiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTAzMTA5NywiZXhwIjoyMDk2NjA3MDk3fQ.83qD96bOyk7BYY6WZGpIBKg3V84qsBACfhfFyjQ1HyE").replace(/\s+/g, "");
+      const SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5uZ2x4aXdxd3dqY3Nlam10dnhiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTAzMTA5NywiZXhwIjoyMDk2NjA3MDk3fQ.83qD96bOyk7BYY6WZGpIBKg3V84qsBACfhfFyjQ1HyE";
 
       const PAYMOB_SECRET_KEY = (env.PAYMOB_SECRET_KEY || "").replace(/\s+/g, "");
       const PAYMOB_PUBLIC_KEY = (env.PAYMOB_PUBLIC_KEY || "").replace(/\s+/g, "");
@@ -48,9 +40,11 @@ export default {
         }
 
         const expiryDate = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
-        const endpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
 
-        const supabaseRes = await fetch(endpoint, {
+        // الحل الجذري: تحديد on_conflict=device_id بداخل الـ URL لضمان نجاح الـ UPSERT وسماح Supabase بالتمرير
+        const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
+
+        const supabaseRes = await fetch(supabaseEndpoint, {
           method: "POST",
           headers: {
             "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -121,28 +115,6 @@ export default {
           })
         });
 
-        if (paymobRes.status === 401 || paymobRes.status === 403) {
-          paymobRes = await fetch("https://accept.paymob.com/v1/intention/", {
-            method: "POST",
-            headers: {
-              "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              amount: amountCents,
-              currency: "EGP",
-              payment_methods: [CARD_INTEGRATION_ID, WALLET_INTEGRATION_ID],
-              billing_data: {
-                first_name: "Smart",
-                last_name: "Contractor",
-                email: "client@smartcontractor.com",
-                phone_number: "+201000000000"
-              },
-              special_reference: `SC_${deviceId}_${Date.now()}`
-            })
-          });
-        }
-
         const rawText = await paymobRes.text();
         let intentData;
         try { intentData = JSON.parse(rawText); } catch (e) { intentData = rawText; }
@@ -206,9 +178,9 @@ export default {
           const expiryDate = new Date();
           expiryDate.setDate(expiryDate.getDate() + daysToAdd);
 
-          const endpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
+          const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
 
-          const supabaseRes = await fetch(endpoint, {
+          const supabaseRes = await fetch(supabaseEndpoint, {
             method: "POST",
             headers: {
               "apikey": SUPABASE_SERVICE_ROLE_KEY,
