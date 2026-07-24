@@ -27,7 +27,7 @@ export default {
       const PAYMOB_PUBLIC_KEY = (env.PAYMOB_PUBLIC_KEY || "").replace(/\s+/g, "");
 
       // ----------------------------------------------------
-      // 1. تفعيل التجربة المجانية مع فحص الاستخدام السابق
+      // 1. تفعيل التجربة المجانية
       // ----------------------------------------------------
       if (body.action === "activate_trial") {
         const deviceId = body.device_id;
@@ -112,9 +112,9 @@ export default {
         const CARD_INTEGRATION_ID = 5790552;
         const WALLET_INTEGRATION_ID = 5783298;
 
-        let authHeader = PAYMOB_SECRET_KEY.startsWith("Egy_sk_") 
-          ? `Bearer ${PAYMOB_SECRET_KEY}` 
-          : `Token ${PAYMOB_SECRET_KEY}`;
+        // دعم مفاتيح egy_sk_ المباشرة بـ Bearer أو Token
+        const isSecretKeyFormat = PAYMOB_SECRET_KEY.toLowerCase().startsWith("egy_sk_");
+        const authHeader = isSecretKeyFormat ? `Token ${PAYMOB_SECRET_KEY}` : `Bearer ${PAYMOB_SECRET_KEY}`;
 
         let paymobRes = await fetch("https://accept.paymob.com/v1/intention/", {
           method: "POST",
@@ -155,7 +155,7 @@ export default {
       }
 
       // ----------------------------------------------------
-      // 3. التحقق والتفعيل اليدوي المباشر مع تفاصيل الرد (verify_payment)
+      // 3. التحقق والتفعيل اليدوي والحماية من التكرار (verify_payment)
       // ----------------------------------------------------
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
@@ -193,33 +193,35 @@ export default {
 
         let isSuccess = false;
         let amountCents = 0;
+        let verifyRes, txData = {};
 
-        // توليد Auth Token
-        let authToken = "";
+        // 🔑 1. المحاولة الأولى: استخدام Token <SecretKey> (المعتمد لمفاتيح egy_sk_)
         try {
-          const authRes = await fetch("https://accept.paymob.com/api/auth/tokens", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ api_key: PAYMOB_SECRET_KEY })
+          verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
+            method: "GET",
+            headers: {
+              "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
+              "Content-Type": "application/json"
+            }
           });
-          if (authRes.ok) {
-            const authData = await authRes.json();
-            authToken = authData.token;
-          }
+          txData = await verifyRes.json();
         } catch (e) {}
 
-        const authHeader = authToken ? `Bearer ${authToken}` : (PAYMOB_SECRET_KEY.startsWith("Egy_sk_") ? `Bearer ${PAYMOB_SECRET_KEY}` : `Token ${PAYMOB_SECRET_KEY}`);
+        // 🔑 2. المحاولة الثانية: استخدام Bearer <SecretKey> إذا فشلت الأولى
+        if (!verifyRes || !verifyRes.ok) {
+          try {
+            verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
+              method: "GET",
+              headers: {
+                "Authorization": `Bearer ${PAYMOB_SECRET_KEY}`,
+                "Content-Type": "application/json"
+              }
+            });
+            txData = await verifyRes.json();
+          } catch (e) {}
+        }
 
-        // فحص Transaction API
-        let verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
-          method: "GET",
-          headers: { "Authorization": authHeader, "Content-Type": "application/json" }
-        });
-
-        let txData = {};
-        try { txData = await verifyRes.json(); } catch (e) {}
-
-        if (verifyRes.ok && (txData.success === true || txData.is_success === true) && txData.pending === false) {
+        if (verifyRes && verifyRes.ok && (txData.success === true || txData.is_success === true) && txData.pending === false) {
           isSuccess = true;
           amountCents = txData.amount_cents || 0;
         }
@@ -267,10 +269,9 @@ export default {
             }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
           }
         } else {
-          // طباعة رد Paymob الحقيقي مباشرة في نص الرسالة ليظهر على الشاشة!
           return new Response(JSON.stringify({
             success: false,
-            message: `فشل التحقق من Paymob (Status: ${verifyRes.status}) - الرد: ${JSON.stringify(txData)}`
+            message: `فشل التحقق من Paymob (Status: ${verifyRes?.status || "Unknown"}) - الرد: ${JSON.stringify(txData)}`
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
@@ -288,3 +289,4 @@ export default {
     }
   }
 };
+ 
