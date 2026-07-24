@@ -23,7 +23,6 @@ export default {
       const SUPABASE_URL = "https://lwffkkzdkvafyuwrcbzl.supabase.co";
       const SUPABASE_SERVICE_ROLE_KEY = (env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3ZmZra3pka3ZhZnl1d3JjYnpsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDM4NDk3NSwiZXhwIjoyMDk5OTYwOTc1fQ.PLACEHOLDER").replace(/\s+/g, "");
 
-      // الحصول على مفتاح Paymob وتأمين إزالة أي مسافات
       const PAYMOB_SECRET_KEY = (env.PAYMOB_SECRET_KEY || "").replace(/\s+/g, "");
       const PAYMOB_PUBLIC_KEY = (env.PAYMOB_PUBLIC_KEY || "").replace(/\s+/g, "");
 
@@ -156,7 +155,7 @@ export default {
       }
 
       // ----------------------------------------------------
-      // 3. التحقق والتفعيل اليدوي والحماية من التكرار (verify_payment)
+      // 3. التحقق والتفعيل اليدوي المزدوج (verify_payment)
       // ----------------------------------------------------
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
@@ -195,7 +194,7 @@ export default {
         let isSuccess = false;
         let amountCents = 0;
 
-        // 🔑 توليد Token رسمي ديناميكياً لتأكيد صلاحيات الاستعلام من Paymob
+        // توليد Auth Token
         let authToken = "";
         try {
           const authRes = await fetch("https://accept.paymob.com/api/auth/tokens", {
@@ -209,20 +208,12 @@ export default {
           }
         } catch (e) {}
 
-        // تجهيز هيدر التوثيق المناسب
-        let verifyHeaders = {};
-        if (authToken) {
-          verifyHeaders = { "Authorization": `Bearer ${authToken}`, "Content-Type": "application/json" };
-        } else if (PAYMOB_SECRET_KEY.startsWith("Egy_sk_")) {
-          verifyHeaders = { "Authorization": `Bearer ${PAYMOB_SECRET_KEY}`, "Content-Type": "application/json" };
-        } else {
-          verifyHeaders = { "Authorization": `Token ${PAYMOB_SECRET_KEY}`, "Content-Type": "application/json" };
-        }
+        const authHeader = authToken ? `Bearer ${authToken}` : (PAYMOB_SECRET_KEY.startsWith("Egy_sk_") ? `Bearer ${PAYMOB_SECRET_KEY}` : `Token ${PAYMOB_SECRET_KEY}`);
 
-        // الاستعلام عن العملية بداخل Paymob
+        // 1️⃣ المحاولة الأولى: فحص Transaction API المباشر
         let verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
           method: "GET",
-          headers: verifyHeaders
+          headers: { "Authorization": authHeader, "Content-Type": "application/json" }
         });
 
         let txData = {};
@@ -231,9 +222,23 @@ export default {
         if (verifyRes.ok && (txData.success === true || txData.is_success === true) && txData.pending === false) {
           isSuccess = true;
           amountCents = txData.amount_cents || 0;
+        } else {
+          // 2️⃣ المحاولة الثانية: فحص Order ID
+          let orderRes = await fetch(`https://accept.paymob.com/api/ecommerce/orders/${cleanTxId}`, {
+            method: "GET",
+            headers: { "Authorization": authHeader, "Content-Type": "application/json" }
+          });
+
+          let orderData = {};
+          try { orderData = await orderRes.json(); } catch(e) {}
+
+          if (orderRes.ok && orderData.paid_at) {
+            isSuccess = true;
+            amountCents = orderData.amount_cents || 0;
+          }
         }
 
-        // تنفيذ التفعيل في Supabase إذا كانت العملية ناجحة
+        // 3️⃣ الحفظ والتفعيل بداخل Supabase
         if (isSuccess) {
           const now = new Date();
           if (amountCents >= 200000) {
@@ -278,8 +283,8 @@ export default {
         } else {
           return new Response(JSON.stringify({
             success: false,
-            message: `العملية لم تكتمل بنجاح أو تعذر التحقق منها من بوابة Paymob.`,
-            paymob_error: txData
+            message: "العملية لم تكتمل بنجاح أو تعذر العثور على الإيصال في Paymob.",
+            raw_response: txData
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
@@ -297,4 +302,3 @@ export default {
     }
   }
 };
- 
