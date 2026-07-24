@@ -22,17 +22,18 @@ export default {
       try {
         body = await request.json();
       } catch (e) {
-        return new Response(JSON.stringify({ success: false, message: "بيانات Request غير صحيحة" }), {
+        return new Response(JSON.stringify({ success: false, message: "بيانات الطلب غير صالحة" }), {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       }
 
-      // تنظيف المتغيرات تماماً من أي مسافات أو أسطر مخفية
+      // 1. تثبيت رابط مشروعك ومفتاح الخدمة بشكل مباشر لمنع أي مشاكل DNS/1016/530
+      const SUPABASE_URL = "https://nnglxiwqwwjcsejmtvxb.supabase.co";
+      const SUPABASE_SERVICE_ROLE_KEY = (env.SUPABASE_SERVICE_ROLE_KEY || "EyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5uZ2x4aXdxd3dqY3Nlam10dnhiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTAzMTA5NywiZXhwIjoyMDk2NjA3MDk3fQ.83qD96bOyk7BYY6WZGpIBKg3V84qsBACfhfFyjQ1HyE").replace(/\s+/g, "");
+
       const PAYMOB_SECRET_KEY = (env.PAYMOB_SECRET_KEY || "").replace(/\s+/g, "");
       const PAYMOB_PUBLIC_KEY = (env.PAYMOB_PUBLIC_KEY || "").replace(/\s+/g, "");
-      const SUPABASE_URL = (env.SUPABASE_URL || "").replace(/\s+/g, "").replace(/\/$/, "");
-      const SUPABASE_SERVICE_ROLE_KEY = (env.SUPABASE_SERVICE_ROLE_KEY || "").replace(/\s+/g, "");
 
       // ----------------------------------------------------
       // 1. تفعيل التجربة المجانية (activate_trial)
@@ -47,11 +48,9 @@ export default {
         }
 
         const expiryDate = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+        const endpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
 
-        // ربط صريح يمنع كود 530 عن طريق إضافة on_conflict وتحديد الـ Headers بدقة
-        const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
-
-        const supabaseRes = await fetch(supabaseEndpoint, {
+        const supabaseRes = await fetch(endpoint, {
           method: "POST",
           headers: {
             "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -207,9 +206,9 @@ export default {
           const expiryDate = new Date();
           expiryDate.setDate(expiryDate.getDate() + daysToAdd);
 
-          const supabaseEndpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
+          const endpoint = `${SUPABASE_URL}/rest/v1/subscriptions?on_conflict=device_id`;
 
-          const supabaseRes = await fetch(supabaseEndpoint, {
+          const supabaseRes = await fetch(endpoint, {
             method: "POST",
             headers: {
               "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -259,4 +258,3 @@ export default {
     }
   }
 };
- 
