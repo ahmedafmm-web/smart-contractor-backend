@@ -151,7 +151,7 @@ export default {
       }
 
       // ----------------------------------------------------
-      // 3. التحقق والتفعيل المباشر بـ Secret Key (verify_payment)
+      // 3. التحقق والتفعيل المباشر المتوافق مع Intention API
       // ----------------------------------------------------
       if (body.action === "verify_payment") {
         const { transaction_id, device_id } = body;
@@ -190,35 +190,47 @@ export default {
         let isSuccess = false;
         let amountCents = 0;
         let txData = {};
+        let verifyRes;
 
-        // 🔑 الاستعلام المباشر باستخدام المفتاح الخاص بـ Paymob المخصص لـ Intention API
-        let verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
-          method: "GET",
-          headers: {
-            "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
-            "Content-Type": "application/json"
-          }
-        });
-
-        if (!verifyRes.ok) {
-          // محاولة ثانية بـ Bearer في حال قبول السيرفر لها
-          verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
+        // 1️⃣ المسار الأول: فحص Intention API المخصص لمفاتيح egy_sk_
+        try {
+          verifyRes = await fetch(`https://accept.paymob.com/v1/intention/${cleanTxId}/`, {
             method: "GET",
             headers: {
-              "Authorization": `Bearer ${PAYMOB_SECRET_KEY}`,
+              "Authorization": `Token ${PAYMOB_SECRET_KEY}`,
               "Content-Type": "application/json"
             }
           });
+          if (verifyRes.ok) {
+            txData = await verifyRes.json();
+            if (txData.status === "SUCCESS" || txData.status === "COMPLETED" || txData.is_paid === true) {
+              isSuccess = true;
+              amountCents = txData.amount || txData.amount_cents || 0;
+            }
+          }
+        } catch(e) {}
+
+        // 2️⃣ المسار الثاني: فحص Transaction API التابع للمفاتيح المباشرة
+        if (!isSuccess) {
+          try {
+            verifyRes = await fetch(`https://accept.paymob.com/api/acceptance/transactions/${cleanTxId}`, {
+              method: "GET",
+              headers: {
+                "Authorization": `Secret ${PAYMOB_SECRET_KEY}`,
+                "Content-Type": "application/json"
+              }
+            });
+            if (verifyRes.ok) {
+              txData = await verifyRes.json();
+              if ((txData.success === true || txData.is_success === true) && txData.pending === false) {
+                isSuccess = true;
+                amountCents = txData.amount_cents || 0;
+              }
+            }
+          } catch(e) {}
         }
 
-        try { txData = await verifyRes.json(); } catch (e) {}
-
-        if (verifyRes.ok && (txData.success === true || txData.is_success === true) && txData.pending === false) {
-          isSuccess = true;
-          amountCents = txData.amount_cents || 0;
-        }
-
-        // تنفيذ التفعيل في Supabase
+        // 3️⃣ تنفيذ التفعيل في Supabase
         if (isSuccess) {
           const now = new Date();
           if (amountCents >= 200000) {
@@ -263,7 +275,8 @@ export default {
         } else {
           return new Response(JSON.stringify({
             success: false,
-            message: `فشل التحقق (Status: ${verifyRes.status}) - ${JSON.stringify(txData)}`
+            message: `لم يتم العثور على معاملة مدفوعة بالرقم المرفق في حساب Paymob الخاص بك.`,
+            debug: txData
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
